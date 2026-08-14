@@ -1,0 +1,47 @@
+registration_id,participant_id,role,need_buddy,attendance_status,checkin_datetime
+256-001,P0001,Main Attendee,0,Attended,2026-06-27 18:55
+256-002,P0002,Main Attendee,0,Attended,2026-06-27 18:58
+256-003,P0003,Main Attendee,0,Attended,2026-06-27 19:00
+256-004,P0004,Main Attendee,0,Attended,2026-06-27 19:01
+256-005,P0005,Main Attendee,0,Attended,2026-06-27 19:02
+256-006,P0006,Main Attendee,0,Attended,2026-06-27 19:03
+256-007,P0007,Main Attendee,0,Attended,2026-06-27 19:04
+256-008,P0008,Main Attendee,0,Attended,2026-06-27 19:05
+256-009,P0009,Main Attendee,0,Attended,2026-06-27 19:06
+256-010,P0010,Main Attendee,0,Attended,2026-06-27 19:07
+256-011,P0011,Main Attendee,0,Attended,2026-06-27 19:08
+256-012,P0012,Main Attendee,0,No Show,
+256-013,P0013,Main Attendee,0,No Show,
+256-014,P0014,Main Attendee,0,Attended,2026-06-27 19:11
+256-015,P0015,Main Attendee,0,Attended,2026-06-27 19:12
+256-016,P0016,Main Attendee,0,Attended,2026-06-27 19:13
+256-017,P0017,Main Attendee,0,Attended,2026-06-27 19:14
+256-018,P0018,Main Attendee,0,Attended,2026-06-27 19:15
+256-019,P0019,Main Attendee,0,Attended,2026-06-27 19:16
+256-020,P0020,Main Attendee,0,Attended,2026-06-27 19:17
+256-021,P0021,Main Attendee,0,No Show,
+256-022,P0022,Main Attendee,0,Attended,2026-06-27 19:19
+256-023,P0023,Main Attendee,0,Attended,2026-06-27 19:20
+256-024,P0024,Main Attendee,0,Attended,2026-06-27 19:21
+256-024,P0025,Guest,0,Attended,2026-06-27 19:22
+256-025,P0025,Main Attendee,0,Attended,2026-06-27 19:23
+256-026,P0026,Main Attendee,0,Attended,2026-06-27 19:24
+256-027,P0027,Main Attendee,0,No Show,
+260-001,P0028,Main Attendee,0,Attended,2026-06-13 13:52
+260-002,P0029,Main Attendee,0,Attended,2026-06-13 13:57
+260-003,P0030,Main Attendee,0,Attended,2026-06-13 13:58
+260-004,P0031,Main Attendee,0,Attended,2026-06-13 14:01
+263-001,P0032,Main Attendee,0,Not Checked In,
+263-002,P0033,Main Attendee,0,Not Checked In,
+263-003,P0034,Main Attendee,0,Not Checked In,
+263-004,P0035,Main Attendee,0,Not Checked In,
+263-005,P0036,Main Attendee,0,Not Checked In,
+263-006,P0037,Main Attendee,0,Not Checked In,
+263-007,P0038,Main Attendee,0,Not Checked In,
+263-008,P0002,Main Attendee,0,Not Checked In,
+263-009,P0003,Main Attendee,0,Not Checked In,
+263-010,P0006,Main Attendee,0,Not Checked In,
+263-011,P0007,Main Attendee,0,Not Checked In,
+263-012,P0008,Main Attendee,0,Not Checked In,
+263-013,P0014,Main Attendee,0,Not Checked In,
+263-014,P0018,Main Attendee,0,Not Checked In,

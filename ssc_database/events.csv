@@ -1,0 +1,4 @@
+event_id,location_id,event_type,partner_id,event_name,start_datetime,end_datetime,age_rating,ticket_cost,accessibility
+256,L002,UGF,PAR001,Uitgaansfeest Amsterdam: Tolhuistuin,2026-06-27 19:00,2026-06-27 22:30,18+,5,"MIVA Toilet, Prikkelarme ruimte(s), Rolstoeltoegankelijke in/uitgang"
+260,L001,VMR,PAR001,Vraag Maar Raak Utrecht: de Wilg,2026-06-13 14:00,2026-06-13 17:00,18+,0,"Lift, MIVA Toilet, Rolstoeltoegankelijke in/uitgang"
+263,L002,UGF,PAR001,Uitgaansfeest Amsterdam: Tolhuistuin,2026-09-05 19:00,2026-09-05 22:30,18+,5,"Lift, MIVA Toilet, Prikkelarme ruimte(s), Rolstoeltoegankelijke in/uitgang"

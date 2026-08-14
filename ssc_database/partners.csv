@@ -1,0 +1,8 @@
+partner_id,partner_name,partner_type,street_number,postal_code,city,country,contact_person,phone_number,email_address,website,status,partner_since
+PAR001,The Special Social Club,Event Organization,Tolhuisweg 2,1031 CL,Amsterdam,NL,Martijn Draper ,0623628455,info@despecialsocialclub.nl,https://despecialsocialclub.nl/,Active,2019
+PAR002,ABCDate,Event Organization,Oostdam 2,3441 EM,Woerden,NL,Robin Zwetsloot,0639312264,info@abcdate.nl,www.abcdate.nl,Active,
+PAR003,Circusbende Festival,Event Organization,Flevopark 11,1095 KE,Amsterdam,NL,Laura Jehle,0619913775,laura@circusbende.nl,www.circusbende.nl,Active,
+PAR004,De Wilg Utrecht,Event Venue,Mecklenburglaan 3-5,3581 NV,Utretch,NL,Antwan Cornelissen,0636376411,info@dewilg.nl,www.dewilg.nl,Active,
+PAR005,Stichting Prisma,Event Venue,Zwanenburgwal 206, 1011 JH ,Amsterdam,NL,Lina Snoek,0618535613,info@stichtingprisma.nl,www.stichtingprisma.nl,Active,
+PAR006,"Vriendenkringen, Dock",Event Organization,Elandsgracht 70,1016 TZ,Amsterdam,NL,Emmelotte van der werff (projectleider),0630966572,evanderwerff@dock.nl,https://www.vriendenkringenamsterdam.nl/,Active,
+PAR007,No Limits,Event Organization,Belgiëlaan 2F, 2034 AX,Haarlem,NL,Pien van de Rest,0628405910,Pien.nolimits@gmail.com,https://www.instagram.com/no_limitshaarlem/,Active,
