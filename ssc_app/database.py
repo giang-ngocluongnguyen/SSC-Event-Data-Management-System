@@ -1,10 +1,10 @@
 import json
-import sqlite3
+from collections.abc import Mapping
 from contextlib import contextmanager
-from pathlib import Path
 
+import streamlit as st
+from sqlalchemy import URL, create_engine, text
 
-DB_PATH = Path(__file__).parent / "ssc_database.db"
 
 MASTER_TABLES = ["events", "locations", "event_types", "participants", "partners"]
 TRANSACTION_TABLES = ["event_registration", "event_registered_attendee"]
@@ -19,204 +19,184 @@ AUDITED_TABLES = {
     "event_registered_attendee": ["registration_id", "participant_id"],
 }
 
+SCHEMA = "public"
+REQUIRED_TABLES = set(MASTER_TABLES + TRANSACTION_TABLES + ["audit_log"])
+
+
+@st.cache_resource
+def get_engine():
+    """Create one reusable SQLAlchemy engine for Supabase PostgreSQL."""
+    config = st.secrets["database"]
+    database_url = URL.create(
+        drivername="postgresql+psycopg",
+        username=config["user"],
+        password=config["password"],
+        host=config["host"],
+        port=int(config.get("port", 5432)),
+        database=config.get("database", "postgres"),
+    )
+    return create_engine(
+        database_url,
+        connect_args={"sslmode": config.get("sslmode", "require")},
+        pool_pre_ping=True,
+        pool_recycle=300,
+        pool_size=5,
+        max_overflow=2,
+    )
+
+
+def _prepare_statement(sql, params=()):
+    """Convert positional placeholders into SQLAlchemy bind parameters."""
+    if not isinstance(sql, str):
+        return sql, params
+    if isinstance(params, Mapping):
+        return text(sql), dict(params)
+    values = list(params or ())
+    placeholder_count = sql.count("?")
+    if placeholder_count != len(values):
+        if placeholder_count == 0 and not values:
+            return text(sql), {}
+        raise ValueError(
+            f"SQL placeholder count ({placeholder_count}) does not match "
+            f"parameter count ({len(values)})."
+        )
+    pieces = sql.split("?")
+    converted = pieces[0]
+    bindings = {}
+    for index, value in enumerate(values):
+        key = f"p{index}"
+        converted += f":{key}" + pieces[index + 1]
+        bindings[key] = value
+    return text(converted), bindings
+
+
+class DatabaseRow(Mapping):
+    """Mapping row that also supports integer-index access."""
+
+    def __init__(self, row):
+        self._values = tuple(row)
+        self._mapping = dict(row._mapping)
+
+    def __getitem__(self, key):
+        if isinstance(key, int):
+            return self._values[key]
+        return self._mapping[key]
+
+    def __iter__(self):
+        return iter(self._mapping)
+
+    def __len__(self):
+        return len(self._mapping)
+
+
+class DatabaseResult:
+    def __init__(self, result):
+        self._result = result
+
+    @property
+    def rowcount(self):
+        return self._result.rowcount
+
+    def fetchone(self):
+        row = self._result.fetchone()
+        return DatabaseRow(row) if row is not None else None
+
+    def fetchall(self):
+        return [DatabaseRow(row) for row in self._result.fetchall()]
+
+    def scalar(self):
+        return self._result.scalar()
+
+
+class DatabaseConnection:
+    """Small compatibility adapter around a SQLAlchemy connection."""
+
+    def __init__(self, connection):
+        self._connection = connection
+
+    def execute(self, sql, params=()):
+        statement, bindings = _prepare_statement(sql, params)
+        return DatabaseResult(self._connection.execute(statement, bindings))
+
+    def close(self):
+        self._connection.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.close()
+
 
 def connect():
-    connection = sqlite3.connect(DB_PATH, timeout=10)
-    connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA foreign_keys = ON")
-    connection.execute("PRAGMA busy_timeout = 10000")
-    return connection
+    """Return a PostgreSQL connection for read operations."""
+    return DatabaseConnection(get_engine().connect())
 
 
 def set_operator(connection, operator):
+    """Set the audit operator for the current PostgreSQL transaction only."""
     connection.execute(
-        """
-        INSERT INTO audit_context (id, operator)
-        VALUES (1, ?)
-        ON CONFLICT(id) DO UPDATE SET operator=excluded.operator
-        """,
+        "SELECT set_config('app.operator', ?, true)",
         (operator or "SSC Admin",),
     )
 
 
 @contextmanager
 def transaction(operator="SSC Admin", immediate=False):
-    connection = connect()
-    try:
-        connection.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
+    """Commit on success and roll back automatically on failure."""
+    del immediate  # Kept in the signature so existing callers do not break.
+    with get_engine().begin() as raw_connection:
+        connection = DatabaseConnection(raw_connection)
         set_operator(connection, operator)
         yield connection
-        connection.commit()
-    except Exception:
-        connection.rollback()
-        raise
-    finally:
-        connection.close()
 
 
 def column_exists(connection, table, column):
-    return column in [row["name"] for row in connection.execute(f"PRAGMA table_info({table})")]
-
-
-def _json_object(columns, alias):
-    parts = []
-    for column in columns:
-        quoted = '"' + column.replace('"', '""') + '"'
-        parts.append(f"'{column}', {alias}.{quoted}")
-    return "json_object(" + ", ".join(parts) + ")"
-
-
-def _record_expr(pk_columns, alias):
-    parts = []
-    for index, column in enumerate(pk_columns):
-        if index:
-            parts.append("'/'")
-        quoted = '"' + column.replace('"', '""') + '"'
-        parts.append(f"{alias}.{quoted}")
-    return " || ".join(parts)
-
-
-def _drop_old_audit_triggers(connection, table_name):
-    for row in connection.execute(
-        "SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name=? AND name LIKE 'audit_%'",
-        (table_name,),
-    ):
-        connection.execute(f"DROP TRIGGER IF EXISTS {row['name']}")
-
-
-def _create_audit_triggers(connection, table_name, pk_columns):
-    columns = [row["name"] for row in connection.execute(f"PRAGMA table_info({table_name})")]
-    if not columns:
-        return
-
-    before_json = _json_object(columns, "OLD")
-    after_json = _json_object(columns, "NEW")
-    new_record_expr = _record_expr(pk_columns, "NEW")
-    old_record_expr = _record_expr(pk_columns, "OLD")
-    safe_name = table_name.replace("_", "")
-    operator_expr = "COALESCE((SELECT operator FROM audit_context WHERE id=1), 'SSC Admin')"
-
-    _drop_old_audit_triggers(connection, table_name)
-    connection.executescript(
-        f"""
-        CREATE TRIGGER audit_{safe_name}_insert
-        AFTER INSERT ON {table_name}
-        BEGIN
-            INSERT INTO audit_log
-                (table_name, record_id, action, operator, source, before_json, after_json)
-            VALUES
-                ('{table_name}', {new_record_expr} || '', 'INSERT', {operator_expr}, 'sqlite_trigger', NULL, {after_json});
-        END;
-
-        CREATE TRIGGER audit_{safe_name}_update
-        AFTER UPDATE ON {table_name}
-        BEGIN
-            INSERT INTO audit_log
-                (table_name, record_id, action, operator, source, before_json, after_json)
-            VALUES
-                ('{table_name}', {new_record_expr} || '', 'UPDATE', {operator_expr}, 'sqlite_trigger', {before_json}, {after_json});
-        END;
-
-        CREATE TRIGGER audit_{safe_name}_delete
-        AFTER DELETE ON {table_name}
-        BEGIN
-            INSERT INTO audit_log
-                (table_name, record_id, action, operator, source, before_json, after_json)
-            VALUES
-                ('{table_name}', {old_record_expr} || '', 'DELETE', {operator_expr}, 'sqlite_trigger', {before_json}, NULL);
-        END;
-        """
-    )
-
-
-def _ensure_audit_schema(connection):
-    connection.execute(
-        """
-        CREATE TABLE IF NOT EXISTS audit_context (
-            id INTEGER PRIMARY KEY CHECK (id = 1),
-            operator TEXT
-        )
-        """
-    )
-    connection.execute("INSERT OR IGNORE INTO audit_context (id, operator) VALUES (1, 'SSC Admin')")
-    connection.execute(
-        """
-        CREATE TABLE IF NOT EXISTS audit_log (
-            audit_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            changed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            table_name TEXT NOT NULL,
-            record_id TEXT,
-            action TEXT NOT NULL CHECK (action IN ('INSERT', 'UPDATE', 'DELETE')),
-            operator TEXT,
-            source TEXT DEFAULT 'sqlite_trigger',
-            before_json TEXT,
-            after_json TEXT,
-            undone INTEGER DEFAULT 0,
-            undo_audit_id INTEGER
-        )
-        """
-    )
-    if not column_exists(connection, "audit_log", "undone"):
-        connection.execute("ALTER TABLE audit_log ADD COLUMN undone INTEGER DEFAULT 0")
-    if not column_exists(connection, "audit_log", "undo_audit_id"):
-        connection.execute("ALTER TABLE audit_log ADD COLUMN undo_audit_id INTEGER")
-    connection.execute(
-        "CREATE INDEX IF NOT EXISTS idx_audit_log_table_record "
-        "ON audit_log(table_name, record_id, changed_at)"
-    )
-
-
-def _ensure_archive_columns(connection):
-    for table in MASTER_TABLES:
-        exists = connection.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
-            (table,),
-        ).fetchone()
-        if exists and not column_exists(connection, table, "is_archived"):
-            connection.execute(f"ALTER TABLE {table} ADD COLUMN is_archived INTEGER DEFAULT 0")
-
-
-def _ensure_event_image_column(connection):
-    exists = connection.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='events'",
-    ).fetchone()
-    if exists and not column_exists(connection, "events", "event_image_path"):
-        connection.execute("ALTER TABLE events ADD COLUMN event_image_path TEXT")
-
-
-def _ensure_last_updated_columns(connection):
-    for table in AUDITED_TABLES:
-        exists = connection.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
-            (table,),
-        ).fetchone()
-        if not exists:
-            continue
-        if not column_exists(connection, table, "last_updated"):
-            connection.execute(f"ALTER TABLE {table} ADD COLUMN last_updated TEXT")
+    return bool(
         connection.execute(
-            f"UPDATE {table} SET last_updated=COALESCE(last_updated, CURRENT_TIMESTAMP)"
-        )
+            """
+            SELECT EXISTS (
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_schema=? AND table_name=? AND column_name=?
+            )
+            """,
+            (SCHEMA, table, column),
+        ).fetchone()[0]
+    )
 
 
 def initialize_database():
+    """Verify the Supabase schema without mutating it during app startup."""
     with connect() as connection:
-        connection.execute("PRAGMA journal_mode = WAL")
-        _ensure_audit_schema(connection)
-        _ensure_archive_columns(connection)
-        _ensure_event_image_column(connection)
-        _ensure_last_updated_columns(connection)
-        for table_name, pk_columns in AUDITED_TABLES.items():
-            exists = connection.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
-                (table_name,),
-            ).fetchone()
-            if exists:
-                _create_audit_triggers(connection, table_name, pk_columns)
-        connection.commit()
+        existing = {
+            row[0]
+            for row in connection.execute(
+                """
+                SELECT table_name
+                FROM information_schema.tables
+                WHERE table_schema=?
+                """,
+                (SCHEMA,),
+            ).fetchall()
+        }
+    missing = sorted(REQUIRED_TABLES - existing)
+    if missing:
+        raise RuntimeError(
+            "Missing required Supabase tables: "
+            + ", ".join(missing)
+            + ". Run supabase_setup.sql in the Supabase SQL Editor."
+        )
+
+
+def test_connection():
+    with connect() as connection:
+        return connection.execute("SELECT 1").fetchone()[0] == 1
 
 
 def json_loads(value):
-    if not value:
+    if value is None or value == "":
         return None
+    if isinstance(value, (dict, list)):
+        return value
     return json.loads(value)

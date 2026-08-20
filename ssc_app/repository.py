@@ -1,11 +1,18 @@
-import json
 import re
 from datetime import date, datetime
 from pathlib import Path
 
 import pandas as pd
 
-from database import MASTER_TABLES, TRANSACTION_TABLES, connect, json_loads, transaction
+from database import (
+    MASTER_TABLES,
+    TRANSACTION_TABLES,
+    _prepare_statement,
+    connect,
+    get_engine,
+    json_loads,
+    transaction,
+)
 
 
 CHANNELS = ["Connect", "Whatsapp", "Walk-in"]
@@ -45,6 +52,13 @@ EDITABLE_COLUMNS = {
     "event_registration": ["channel", "status", "notes"],
     "event_registered_attendee": ["role", "need_buddy", "attendance_status", "checkin_datetime"],
 }
+BOOLEAN_COLUMNS = {
+    "is_archived",
+    "need_buddy",
+    "whatsapp_groupchat",
+    "have_connect",
+    "marketing_subs",
+}
 
 
 def now_iso():
@@ -65,8 +79,9 @@ def rows(sql, params=()):
 
 
 def dataframe(sql, params=()):
-    with connect() as connection:
-        return pd.read_sql_query(sql, connection, params=params)
+    statement, bindings = _prepare_statement(sql, params)
+    with get_engine().connect() as connection:
+        return pd.read_sql_query(statement, connection, params=bindings)
 
 
 def _blank_to_none(value):
@@ -88,13 +103,13 @@ def _one(connection, sql, params=()):
 def bool_to_db(label):
     if label == "Unknown / not filled":
         return None
-    return 1 if label == "Yes" else 0
+    return label == "Yes"
 
 
 def db_to_bool_label(value):
     if value is None or pd.isna(value):
         return "Unknown / not filled"
-    return "Yes" if int(value) == 1 else "No"
+    return "Yes" if bool(value) else "No"
 
 
 def dob_to_date(value):
@@ -108,7 +123,7 @@ def dob_to_date(value):
 
 def _active_filter(alias=""):
     prefix = f"{alias}." if alias else ""
-    return f"COALESCE({prefix}is_archived, 0) = 0"
+    return f"COALESCE({prefix}is_archived, FALSE) IS FALSE"
 
 
 def events(include_archived=False):
@@ -126,7 +141,7 @@ def events(include_archived=False):
         LEFT JOIN event_types et ON et.etype_id = e.event_type
         LEFT JOIN partners p ON p.partner_id = e.partner_id
         WHERE {archive_filter}
-        ORDER BY datetime(e.start_datetime) DESC
+        ORDER BY e.start_datetime DESC
         """
     )
 
@@ -147,7 +162,7 @@ def partners(include_archived=False):
 
 
 def active_partners():
-    return rows("SELECT * FROM partners WHERE status='Active' AND COALESCE(is_archived,0)=0 ORDER BY lower(partner_name)")
+    return rows("SELECT * FROM partners WHERE status='Active' AND COALESCE(is_archived, FALSE) IS FALSE ORDER BY lower(partner_name)")
 
 
 def locations(include_archived=False):
@@ -202,8 +217,8 @@ def home_past_kpis():
             FROM events e
             LEFT JOIN event_registration er ON er.event_id = e.event_id
             LEFT JOIN event_registered_attendee era ON era.registration_id = er.registration_id
-            WHERE datetime(e.end_datetime) < CURRENT_TIMESTAMP
-              AND COALESCE(e.is_archived,0)=0
+            WHERE e.end_datetime < CURRENT_TIMESTAMP
+              AND COALESCE(e.is_archived, FALSE) IS FALSE
             """
         )
     total_attendees = int(result.get("total_attendees") or 0)
@@ -227,9 +242,9 @@ def split_events_for_home():
 def dashboard_counts():
     with connect() as connection:
         return {
-            "events": connection.execute("SELECT COUNT(*) FROM events WHERE COALESCE(is_archived,0)=0").fetchone()[0],
-            "participants": connection.execute("SELECT COUNT(*) FROM participants WHERE COALESCE(is_archived,0)=0").fetchone()[0],
-            "partners": connection.execute("SELECT COUNT(*) FROM partners WHERE COALESCE(is_archived,0)=0").fetchone()[0],
+            "events": connection.execute("SELECT COUNT(*) FROM events WHERE COALESCE(is_archived, FALSE) IS FALSE").fetchone()[0],
+            "participants": connection.execute("SELECT COUNT(*) FROM participants WHERE COALESCE(is_archived, FALSE) IS FALSE").fetchone()[0],
+            "partners": connection.execute("SELECT COUNT(*) FROM partners WHERE COALESCE(is_archived, FALSE) IS FALSE").fetchone()[0],
             "registrations": connection.execute("SELECT COUNT(*) FROM event_registration").fetchone()[0],
             "checked_in": connection.execute("SELECT COUNT(*) FROM event_registered_attendee WHERE attendance_status='Attended'").fetchone()[0],
         }
@@ -262,6 +277,7 @@ def registrations(event_id=None):
 
 
 def _next_code(connection, table, column, prefix, width):
+    connection.execute("SELECT pg_advisory_xact_lock(hashtext(?))", (f"{table}.{column}",))
     values = [row[0] for row in connection.execute(f"SELECT {column} FROM {table}").fetchall()]
     maximum = 0
     for value in values:
@@ -273,6 +289,7 @@ def _next_code(connection, table, column, prefix, width):
 
 def next_registration_id(connection, event_id):
     prefix = f"{int(event_id)}-"
+    connection.execute("SELECT pg_advisory_xact_lock(hashtext(?))", (f"registration:{event_id}",))
     values = connection.execute(
         "SELECT registration_id FROM event_registration WHERE event_id=? AND registration_id LIKE ?",
         (int(event_id), f"{prefix}%"),
@@ -286,6 +303,7 @@ def next_registration_id(connection, event_id):
 
 
 def next_event_id(connection):
+    connection.execute("SELECT pg_advisory_xact_lock(hashtext('events.event_id'))")
     return int(connection.execute("SELECT COALESCE(MAX(event_id), 0) + 1 FROM events").fetchone()[0])
 
 
@@ -342,7 +360,7 @@ def upsert_participant(data):
                     whatsapp_groupchat=COALESCE(?, whatsapp_groupchat),
                     have_connect=COALESCE(?, have_connect),
                     marketing_subs=COALESCE(?, marketing_subs),
-                    is_archived=0,
+                    is_archived=FALSE,
                     last_updated=?
                 WHERE participant_id=?
                 """,
@@ -368,7 +386,7 @@ def upsert_participant(data):
             "whatsapp_groupchat": clean.get("whatsapp_groupchat"),
             "have_connect": clean.get("have_connect"),
             "marketing_subs": clean.get("marketing_subs"),
-            "is_archived": 0,
+            "is_archived": False,
             "last_updated": now_iso(),
         }
         fields = list(row)
@@ -560,9 +578,9 @@ def _normalise_bool_import(value):
         return None
     text = str(value).strip().lower()
     if text in {"1", "true", "yes", "y", "ja", "checked", "agree", "agreed"}:
-        return 1
+        return True
     if text in {"0", "false", "no", "n", "nee", "not checked", "disagree", "declined"}:
-        return 0
+        return False
     return None
 
 
@@ -701,7 +719,7 @@ def import_profile_completion_responses(records, event_id=None):
 
             assignments = ", ".join(f"{field}=?" for field in changes)
             connection.execute(
-                f"UPDATE participants SET {assignments}, is_archived=0, last_updated=? WHERE participant_id=?",
+                f"UPDATE participants SET {assignments}, is_archived=FALSE, last_updated=? WHERE participant_id=?",
                 [*changes.values(), now_iso(), participant_id],
             )
             result["updated"] += 1
@@ -717,7 +735,7 @@ def create_event(data):
     with transaction(current_operator(), immediate=True) as connection:
         event_id = next_event_id(connection)
         clean["event_id"] = event_id
-        clean["is_archived"] = 0
+        clean["is_archived"] = False
         clean["last_updated"] = now_iso()
         fields = ["event_id", "location_id", "event_type", "partner_id", "event_name", "start_datetime", "end_datetime", "age_rating", "ticket_cost", "accessibility", "event_image_path", "is_archived", "last_updated"]
         connection.execute(
@@ -746,7 +764,7 @@ def create_location(data):
     clean = {key: _blank_to_none(value) for key, value in data.items()}
     with transaction(current_operator(), immediate=True) as connection:
         clean["location_id"] = _next_code(connection, "locations", "location_id", "L", 3)
-        clean["is_archived"] = 0
+        clean["is_archived"] = False
         clean["last_updated"] = now_iso()
         fields = ["location_id", "location_name", "street_number", "postal_code", "city", "country", "is_archived", "last_updated"]
         connection.execute(
@@ -760,7 +778,7 @@ def create_event_type(name):
     with transaction(current_operator(), immediate=True) as connection:
         etype_id = make_event_type_id(connection, name)
         connection.execute(
-            "INSERT INTO event_types (etype_id, etype_name, is_archived, last_updated) VALUES (?, ?, 0, ?)",
+            "INSERT INTO event_types (etype_id, etype_name, is_archived, last_updated) VALUES (?, ?, FALSE, ?)",
             (etype_id, name.strip(), now_iso()),
         )
         return etype_id
@@ -770,7 +788,7 @@ def create_partner(data):
     clean = {key: _blank_to_none(value) for key, value in data.items()}
     with transaction(current_operator(), immediate=True) as connection:
         clean["partner_id"] = _next_code(connection, "partners", "partner_id", "PAR", 3)
-        clean["is_archived"] = 0
+        clean["is_archived"] = False
         clean["last_updated"] = now_iso()
         fields = ["partner_id", "partner_name", "partner_type", "street_number", "postal_code", "city",
                   "country", "contact_person", "phone_number", "email_address", "website", "status", "partner_since", "is_archived", "last_updated"]
@@ -800,7 +818,15 @@ def mark_remaining_no_show(event_id):
 def table_columns(table):
     if table not in TABLES:
         raise ValueError("Unsupported table.")
-    return rows(f"PRAGMA table_info({table})")
+    return rows(
+        """
+        SELECT column_name AS name, data_type AS type, is_nullable
+        FROM information_schema.columns
+        WHERE table_schema='public' AND table_name=?
+        ORDER BY ordinal_position
+        """,
+        (table,),
+    )
 
 
 def table_records(table, include_archived=True, limit=500):
@@ -808,7 +834,7 @@ def table_records(table, include_archived=True, limit=500):
         raise ValueError("Unsupported table.")
     where = ""
     if table in MASTER_TABLES and not include_archived:
-        where = "WHERE COALESCE(is_archived,0)=0"
+        where = "WHERE COALESCE(is_archived, FALSE) IS FALSE"
     order_cols = ", ".join(PK_COLUMNS[table])
     return rows(f"SELECT * FROM {table} {where} ORDER BY {order_cols} LIMIT ?", (int(limit),))
 
@@ -826,6 +852,9 @@ def update_record(table, pk_values, changes):
         for key, value in changes.items()
         if key in EDITABLE_COLUMNS[table] and key not in PK_COLUMNS[table]
     }
+    for key in BOOLEAN_COLUMNS & clean.keys():
+        if clean[key] is not None:
+            clean[key] = bool(clean[key])
     if not clean:
         return 0
     where = " AND ".join(f"{column}=?" for column in PK_COLUMNS[table])
@@ -840,7 +869,7 @@ def update_record(table, pk_values, changes):
 
 def archive_record(table, pk_values):
     if table in MASTER_TABLES:
-        return update_record(table, pk_values, {"is_archived": 1})
+        return update_record(table, pk_values, {"is_archived": True})
     if table == "event_registration":
         return update_record(table, pk_values, {"status": "Cancelled"})
     if table == "event_registered_attendee":
@@ -884,8 +913,8 @@ def audit_entries(limit=300, table_name=None, operator_name=None, days=None):
         filters.append("operator=?")
         params.append(operator_name)
     if days and days != "All":
-        filters.append("changed_at >= datetime('now', ?)")
-        params.append(f"-{int(days)} days")
+        filters.append("changed_at >= CURRENT_TIMESTAMP - (? * INTERVAL '1 day')")
+        params.append(int(days))
     where = "WHERE " + " AND ".join(filters) if filters else ""
     params.append(int(limit))
     return rows(
@@ -926,7 +955,7 @@ def undo_update(audit_id):
             raise ValueError("Audit entry not found.")
         if entry["action"] != "UPDATE":
             raise ValueError("Only UPDATE actions are supported for undo in this demo.")
-        if int(entry.get("undone") or 0):
+        if bool(entry.get("undone")):
             raise ValueError("This audit entry was already undone.")
         table = entry["table_name"]
         if table not in TABLES:
@@ -943,13 +972,15 @@ def undo_update(audit_id):
             f"UPDATE {table} SET {', '.join(column + '=?' for column in editable)}, last_updated=CURRENT_TIMESTAMP WHERE {where}",
             [*[before[column] for column in editable], *[before[column] for column in pk_cols]],
         )
-        undo_id = connection.execute("SELECT MAX(audit_id) FROM audit_log").fetchone()[0]
+        undo_id = connection.execute(
+            "SELECT MAX(audit_id) FROM audit_log WHERE transaction_id=txid_current()"
+        ).fetchone()[0]
         connection.execute(
-            "UPDATE audit_log SET undone=1, undo_audit_id=? WHERE audit_id=?",
+            "UPDATE audit_log SET undone=TRUE, undo_audit_id=? WHERE audit_id=?",
             (undo_id, int(audit_id)),
         )
         return undo_id
 
 
 def audit_payload(entry, key):
-    return json.loads(entry[key]) if entry.get(key) else None
+    return json_loads(entry.get(key))

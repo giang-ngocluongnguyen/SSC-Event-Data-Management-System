@@ -6,8 +6,19 @@ Run:
 
 ```bash
 pip install -r requirements.txt
+cp .streamlit/secrets.example.toml .streamlit/secrets.toml
 streamlit run app.py
 ```
+
+## Supabase PostgreSQL setup
+
+1. Create the application tables in the `public` schema and load any sample data.
+2. Open Supabase **SQL Editor**, paste `supabase_setup.sql`, and run it once. It adds the supporting columns, PostgreSQL audit functions, and triggers without deleting application data.
+3. In Supabase, open **Connect → Session pooler → Python** and copy the host, port, database, and user values.
+4. Copy `.streamlit/secrets.example.toml` to `.streamlit/secrets.toml` and fill the `[database]` section with the Session pooler values and database password.
+5. Keep `.streamlit/secrets.toml` out of GitHub. For Streamlit Community Cloud, paste the same TOML into **Manage app → Settings → Secrets**.
+
+GitHub stores the app code. All registrations, check-ins, profile updates, event edits, and audit entries are written directly to Supabase PostgreSQL.
 
 ## Sidebar structure
 
@@ -67,7 +78,7 @@ The app already includes the SSC Google Form field mapping from this pre-filled 
 https://docs.google.com/forms/d/e/1FAIpQLSft78oYAoqBc0w_iyacr19bc0y_x6eYhOEXv-TyUoTZjOcvpA/viewform
 ```
 
-When staff select an attendee, Streamlit reads that attendee's SQLite row and builds a unique Google Form link with these values already filled:
+When staff select an attendee, Streamlit reads that attendee's PostgreSQL row and builds a unique Google Form link with these values already filled:
 
 ```text
 event_id, event_name, participant_id, registration_id, participant_name, email, country, notes
@@ -75,7 +86,7 @@ event_id, event_name, participant_id, registration_id, participant_name, email, 
 
 The QR code points to that personalized link. During check-in, the selected attendee box includes `Generate profile QR for this attendee` when the attendee is missing contact info or their profile completeness is below the selected threshold. Staff can show the QR before check-in, and the app can also show it after a successful check-in. If `qrcode[pil]` is not installed locally, the app still displays a QR image through a browser fallback for the single-attendee preview.
 
-In the `Profile Completion` tab, staff can review the event attendee profile-completion table and use `Update Participant Profile` to upload the completed Google Sheet export. Matching rows update the current SQLite participant records by registration code and participant ID.
+In the `Profile Completion` tab, staff can review the event attendee profile-completion table and use `Update Participant Profile` to upload the completed Google Sheet export. Matching rows update the current Supabase participant records by registration code and participant ID.
 
 If the Google Form changes later, create a new Google Forms pre-filled link and paste a placeholder template into the optional override box in the `Profile Completion` tab.
 
@@ -87,7 +98,7 @@ To update participant profiles, export the linked Google Sheet as CSV/XLSX and u
 registration_id, participant_id, participant_name, email, phone_number, address, city, country, dob, whatsapp_groupchat, have_connect, marketing_subs
 ```
 
-The app matches imported responses back to SQLite mainly by `registration_id` and `participant_id`. If a participant edits those prefilled internal fields, the row is skipped for manual review instead of silently updating the wrong person.
+The app matches imported responses back to Supabase mainly by `registration_id` and `participant_id`. If a participant edits those prefilled internal fields, the row is skipped for manual review instead of silently updating the wrong person.
 
 ## Google Forms post-event feedback
 
