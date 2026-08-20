@@ -1,3 +1,18 @@
+# Local secrets — never upload
 .streamlit/secrets.toml
-*.db
 .env
+
+# Legacy/local databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Python-generated files
+__pycache__/
+*.py[cod]
+
+# macOS
+.DS_Store
+
+# Uploaded event images stored locally
+assets/event_images/
