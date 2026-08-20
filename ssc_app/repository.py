@@ -226,17 +226,41 @@ def home_past_kpis():
     result["attendance_rate"] = attended / total_attendees if total_attendees else 0
     return result
 
-
 def split_events_for_home():
     all_events = pd.DataFrame(events_with_stats())
+
     if all_events.empty:
         return [], []
-    all_events["start_ts"] = pd.to_datetime(all_events["start_datetime"], errors="coerce")
-    all_events["end_ts"] = pd.to_datetime(all_events["end_datetime"], errors="coerce")
-    now = pd.Timestamp.now()
-    upcoming = all_events[all_events["start_ts"] >= now].sort_values("start_ts", ascending=True).head(3)
-    past = all_events[all_events["end_ts"] < now].sort_values("end_ts", ascending=False).head(3)
+
+    all_events["start_ts"] = pd.to_datetime(
+        all_events["start_datetime"],
+        errors="coerce",
+        utc=True,
+    )
+
+    all_events["end_ts"] = pd.to_datetime(
+        all_events["end_datetime"],
+        errors="coerce",
+        utc=True,
+    )
+
+    now = pd.Timestamp.now(tz="UTC")
+
+    upcoming = (
+        all_events[all_events["start_ts"] >= now]
+        .sort_values("start_ts", ascending=True)
+        .head(3)
+    )
+
+    past = (
+        all_events[all_events["end_ts"] < now]
+        .sort_values("end_ts", ascending=False)
+        .head(3)
+    )
+
     return past.to_dict("records"), upcoming.to_dict("records")
+
+
 
 
 def dashboard_counts():
