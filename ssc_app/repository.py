@@ -1,7 +1,7 @@
 import re
 from datetime import date, datetime
 from pathlib import Path
-
+from datetime import date, datetime, timezone
 import pandas as pd
 
 from database import (
@@ -62,8 +62,7 @@ BOOLEAN_COLUMNS = {
 
 
 def now_iso():
-    return datetime.now().isoformat(sep=" ", timespec="seconds")
-
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 def current_operator():
     try:
