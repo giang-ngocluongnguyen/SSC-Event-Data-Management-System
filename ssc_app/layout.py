@@ -341,32 +341,38 @@ def sidebar_header():
         st.markdown("<hr class='ssc-sidebar-divider'>", unsafe_allow_html=True)
 
 
-def sidebar_navigation():
+def sidebar_navigation(role="volunteer"):
     with st.sidebar:
         st.markdown("<div class='ssc-sidebar-group'>Overview</div>", unsafe_allow_html=True)
         st.page_link("pages/home.py", label="Home", icon="🏠")
 
         st.markdown("<div class='ssc-sidebar-group'>Event Management</div>", unsafe_allow_html=True)
-        st.page_link("pages/create_event.py", label="Create Event", icon="➕")
+        if role == "admin":
+            st.page_link("pages/create_event.py", label="Create Event", icon="➕")
         st.page_link("pages/event_workspace.py", label="Event Workspace", icon="🎟️")
-        st.page_link("pages/event_analytics.py", label="Event Analytics", icon="📊")
+        if role == "admin":
+            st.page_link("pages/event_analytics.py", label="Event Analytics", icon="📊")
 
-        st.markdown("<div class='ssc-sidebar-group'>Data Management</div>", unsafe_allow_html=True)
-        st.page_link("pages/database.py", label="Database", icon="🗄️")
-        st.page_link("pages/audit_log.py", label="Audit Log", icon="🧾")
+            st.markdown("<div class='ssc-sidebar-group'>Data Management</div>", unsafe_allow_html=True)
+            st.page_link("pages/database.py", label="Database", icon="🗄️")
+            st.page_link("pages/audit_log.py", label="Audit Log", icon="🧾")
 
 
 def sidebar_footer():
+    from auth import logout
+
     logo = _first_existing(["ssc_logo.png", "ssc_logo.jpg", "logo.png", "logo.jpg"])
     with st.sidebar:
         st.divider()
         st.markdown(f"<div class='ssc-club-footer'>{SIDEBAR_TITLE}®</div>", unsafe_allow_html=True)
         if logo:
             st.image(str(logo), use_container_width=True)
-        current = st.session_state.get("operator_name", "SSC Admin")
-        options = ["SSC Admin", "Volunteer"]
-        index = options.index(current) if current in options else 0
-        st.selectbox("Operator", options, index=index, key="operator_name")
+        display_name = st.session_state.get("display_name", st.session_state.get("username", ""))
+        role = st.session_state.get("role", "volunteer").title()
+        st.markdown(f"**Signed in as:** {html.escape(str(display_name))}")
+        st.caption(f"Role: {role}")
+        if st.button("Log out", use_container_width=True):
+            logout()
 
 
 def page_header(title, page_name=None, description=None):

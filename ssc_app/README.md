@@ -9,6 +9,24 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
+## Authentication
+
+The app requires a login before any page or database content is loaded. It has
+three configured accounts:
+
+- `admin-1` — full access
+- `admin-2` — full access
+- `volunteer` — Home and Event Workspace only
+
+Passwords are intentionally not stored in the repository. For local use, copy
+`.streamlit/secrets.toml.example` to `.streamlit/secrets.toml`, replace every
+example password, and keep `secrets.toml` out of Git. For Streamlit Community
+Cloud, paste the same TOML into **App settings → Secrets**.
+
+The authenticated username is also used as the operator name in the database
+audit log. The login lasts for the current browser session; clicking **Log out**
+clears it.
+
 ## Sidebar structure
 
 - Special Social Event Hub, with white headline text
@@ -25,7 +43,7 @@ streamlit run app.py
 - Divider
 - The Special Social Club®
 - SSC logo slot
-- Operator selector: SSC Admin or Volunteer
+- Signed-in account, role, and Log out button
 
 ## Pages
 
