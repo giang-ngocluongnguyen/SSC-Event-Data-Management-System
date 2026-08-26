@@ -36,8 +36,8 @@ def _participant_option_label(row):
     last_event = row.get("last_event_attended") or "No attended event"
     blocked = "🚫 BLOCKED — " if bool(row.get("blocked_flag")) else ""
     return (
-        f"{blocked}{row.get('participant_name') or 'Unnamed'} | {contact} "
-        f"| Last attended: {last_event} [{row['participant_id']}]"
+        f"{blocked}{row.get('participant_name') or 'Unnamed'} — {contact} "
+        f"— Last attended: {last_event} [{row['participant_id']}]"
     )
 
 
@@ -117,6 +117,59 @@ def validate_person(data, label):
         raise ValueError(f"{label}: name is required.")
     if data.get("require_contact") and not (data.get("email") or data.get("phone_number")):
         raise ValueError(f"{label}: provide name + phone number or name + email.")
+
+
+def render_registration_conflicts(event_id, label, person):
+    """Show existing registrations as soon as an existing person is selected."""
+    if not any(person.get(key) for key in ("participant_id", "email", "phone_number")):
+        return []
+    conflicts = repo.registration_conflicts_for_person(event_id, person)
+    for conflict in conflicts:
+        details = []
+        if conflict.get("is_registrant"):
+            details.append("already created a registration")
+        if conflict.get("is_attendee"):
+            role = conflict.get("attendee_role") or "Attendee"
+            details.append(f"is already included as {role}")
+        name = conflict.get("participant_name") or person.get("participant_name") or "This participant"
+        next_step = (
+            "They will not be added twice as an attendee."
+            if conflict.get("is_attendee")
+            else "Review the existing registration before creating another one."
+        )
+        st.warning(
+            f"{label}: {name} {' and '.join(details)} "
+            f"({conflict['registration_id']}). {next_step}"
+        )
+    return conflicts
+
+
+def render_current_form_duplicates(people):
+    """Warn when the same known person appears twice in the current attendee list."""
+    seen = {}
+    duplicates = []
+    for label, person in people:
+        participant_id = str(person.get("participant_id") or "").strip()
+        email = str(person.get("email") or "").strip().lower()
+        phone = str(person.get("phone_number") or "").strip()
+        identity = (
+            ("participant_id", participant_id)
+            if participant_id
+            else (("email", email) if email else (("phone", phone) if phone else None))
+        )
+        if identity is None:
+            continue
+        if identity in seen:
+            duplicates.append(f"{label} matches {seen[identity]}")
+        else:
+            seen[identity] = label
+    if duplicates:
+        st.warning(
+            "The same participant is entered more than once in this registration: "
+            + "; ".join(duplicates)
+            + ". Duplicate attendee rows will be skipped."
+        )
+    return duplicates
 
 
 def registration_summary(channel, attendee_count):
@@ -455,7 +508,7 @@ def profile_completion_tab(current_event, attendee_rows):
     colored_heading("Profile Completion", PINK)
     st.caption(
         "Use a Google Form for attendees who are missing important profile info. "
-        "Upload the completed Google Sheet export to update participant information in the current database."
+        "Sync the event worksheet directly, or upload an exported file as a fallback."
     )
 
     threshold = float(st.session_state.get("profile_completion_threshold", 0.7))
@@ -472,6 +525,49 @@ def profile_completion_tab(current_event, attendee_rows):
         st.info("No attendees found for this event.")
 
     st.markdown("#### Update Participant Profile")
+    worksheet_name = str(event_id)
+    st.markdown("##### Sync from Google Sheets")
+    st.caption(
+        f"Reads worksheet “{worksheet_name}” and updates matching attendees for event {event_id}. "
+        "Only non-empty profile fields are applied."
+    )
+    if google_forms.is_configured(st.secrets):
+        if st.button(
+            f"Sync worksheet {worksheet_name}",
+            type="primary",
+            use_container_width=True,
+            key=f"sync_google_profiles_{event_id}",
+        ):
+            try:
+                sheet_df = google_forms.load_profile_completion_responses(
+                    st.secrets,
+                    worksheet_name=worksheet_name,
+                )
+                if sheet_df.empty:
+                    st.warning(f"Worksheet {worksheet_name} has no response rows.")
+                else:
+                    result = repo.import_profile_completion_responses(
+                        sheet_df.to_dict("records"),
+                        event_id=event_id,
+                    )
+                    st.success(
+                        f"Updated {result['updated']} participant profile(s). "
+                        f"Skipped {result['skipped']} row(s)."
+                    )
+                    if result["errors"]:
+                        st.warning("Some Google Sheet rows were skipped. See details below.")
+                        st.dataframe(
+                            pd.DataFrame(result["errors"]),
+                            hide_index=True,
+                            use_container_width=True,
+                        )
+            except Exception as exc:
+                st.error(f"Could not sync worksheet {worksheet_name}: {exc}")
+    else:
+        missing = ", ".join(google_forms.missing_setup_items(st.secrets))
+        st.info(f"Configure Google Sheet access to enable direct sync. Missing: {missing}")
+
+    st.markdown("##### Upload an exported sheet")
     st.caption(
         "Upload the completed event Google Sheet. Matching rows update the current participant records by registration code and participant ID. "
         "Recommended columns: registration_id, participant_id, participant_name, email, phone_number, "
@@ -549,6 +645,15 @@ tab_registration, tab_checkin, tab_attendees, tab_profile, tab_post = st.tabs([
 
 with tab_registration:
     colored_heading("Registration details", PINK)
+    registration_result = st.session_state.pop(f"registration_result_{event_id}", None)
+    if registration_result:
+        if registration_result.get("code"):
+            st.success(f"Registration created. Registration code: {registration_result['code']}")
+        if registration_result.get("skipped"):
+            st.warning(
+                "Skipped duplicate/already-registered attendee(s): "
+                + ", ".join(registration_result["skipped"])
+            )
     registration_version = st.session_state.get(f"registration_form_version_{event_id}", 0)
     registration_prefix = f"registration_{event_id}_{registration_version}"
     channel = st.selectbox(
@@ -570,6 +675,7 @@ with tab_registration:
     registration_participants = repo.participants_for_registration()
     main = participant_inputs(f"{registration_prefix}_main", registration_participants, require_contact=True)
     main_attends = st.checkbox("Main registrant will attend", value=True, key=f"{registration_prefix}_main_attends")
+    render_registration_conflicts(event_id, "Main registrant", main)
 
     attendees = []
     if main_attends:
@@ -579,6 +685,7 @@ with tab_registration:
         main_attendee = participant_inputs(
             f"{registration_prefix}_main_attendee", registration_participants, require_contact=True
         )
+        render_registration_conflicts(event_id, "Main attendee", main_attendee)
         need_buddy = repo.bool_to_db(st.selectbox("Main attendee needs buddy?", repo.BOOL_OPTIONS, key=f"{registration_prefix}_main_attendee_buddy"))
 
     guest_count = st.number_input("Number of guests", min_value=0, max_value=10, value=0, step=1, key=f"{registration_prefix}_guest_count")
@@ -590,6 +697,15 @@ with tab_registration:
             )
             guest["need_buddy"] = repo.bool_to_db(st.selectbox("Guest needs buddy?", repo.BOOL_OPTIONS, key=f"{registration_prefix}_guest_{index}_buddy"))
             guests.append(guest)
+            render_registration_conflicts(event_id, f"Guest {index + 1}", guest)
+
+    current_attendees = [("Main registrant", main)] if main_attends else [("Main attendee", main_attendee)]
+    current_attendees.extend(
+        (f"Guest {index + 1}", guest)
+        for index, guest in enumerate(guests)
+        if guest.get("participant_name")
+    )
+    render_current_form_duplicates(current_attendees)
 
     notes = st.text_area("Notes for registration", key=f"{registration_prefix}_notes")
     estimated_attendees = 1 + len([guest for guest in guests if guest.get("participant_name")])
@@ -630,11 +746,17 @@ with tab_registration:
                 event_id, main_pid, attendees, channel, notes, immediate_checkin=immediate_checkin
             )
             if code:
-                st.success(f"Registration created. Registration code: {code}")
-            if skipped:
-                st.info("Skipped already-registered attendee(s): " + ", ".join(skipped))
-            st.session_state[f"registration_form_version_{event_id}"] = registration_version + 1
-            st.rerun()
+                st.session_state[f"registration_result_{event_id}"] = {
+                    "code": code,
+                    "skipped": skipped,
+                }
+                st.session_state[f"registration_form_version_{event_id}"] = registration_version + 1
+                st.rerun()
+            elif skipped:
+                st.warning(
+                    "No registration was created because every attendee was already registered "
+                    "or entered more than once: " + ", ".join(skipped)
+                )
         except Exception as exc:
             st.error(str(exc))
 
