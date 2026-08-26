@@ -296,27 +296,10 @@ def render_profile_sync_result(result):
         f"found {result.get('unchanged', 0)} unchanged row(s), and skipped "
         f"{result['skipped']} row(s)."
     )
-    comparison_rows = []
-    for change in result.get("changes", []):
-        before_score = profile_completion_status(change["before"])[0]
-        after_score = profile_completion_status(change["after"])[0]
-        comparison_rows.append({
-            "Participant ID": change["participant_id"],
-            "Name": change.get("participant_name") or "-",
-            "Before": f"{before_score:.0%}",
-            "After": f"{after_score:.0%}",
-            "Change": f"{after_score - before_score:+.0%}",
-            "Updated fields": ", ".join(
-                PROFILE_FIELD_LABELS.get(field, field.replace("_", " ").title())
-                for field in change.get("updated_fields", [])
-            ),
-        })
-    if comparison_rows:
-        st.markdown("##### Profile completeness changes")
-        st.dataframe(pd.DataFrame(comparison_rows), hide_index=True, use_container_width=True)
     if result.get("errors"):
-        st.warning("Some response rows were skipped. See details below.")
-        st.dataframe(pd.DataFrame(result["errors"]), hide_index=True, use_container_width=True)
+        with st.expander("Skipped response details", expanded=False):
+            for item in result["errors"]:
+                st.warning(f"Row {item.get('row', '-')}: {item.get('reason', 'Skipped')}")
 
 
 def should_show_profile_qr(row, threshold):
@@ -521,125 +504,135 @@ def render_profile_qr(payload):
     st.link_button("Open complete-profile form", payload["url"], use_container_width=True)
 
 
-def import_profile_dataframe(df, event_id, button_label, key, on_success=None):
-    if df.empty:
-        st.warning("No response rows found.")
-        return
-    st.dataframe(df.head(30), hide_index=True, use_container_width=True)
-    if st.button(button_label, type="primary", use_container_width=True, key=key):
-        result = repo.import_profile_completion_responses(df.to_dict("records"), event_id=event_id)
-        result["source"] = "uploaded profile sheet"
-        st.session_state[f"profile_sync_result_{event_id}"] = result
-        if on_success:
-            on_success()
-        st.rerun()
-
-
 def profile_completion_tab(current_event, attendee_rows):
     event_id = current_event["event_id"]
     colored_heading("Profile Completion", PINK)
     st.caption(
-        "Use a Google Form for attendees who are missing important profile info. "
-        "Sync the event worksheet directly, or upload an exported file as a fallback."
+        "One profile table for every participant in this event. Sync from Google Sheets "
+        "or upload a CSV/Excel export when needed."
     )
-
-    threshold = float(st.session_state.get("profile_completion_threshold", 0.7))
-
-    if attendee_rows:
-        preview = pd.DataFrame(attendee_rows)[[
-            "registration_id", "participant_id", "participant_name", "email", "phone_number",
-            "dob", "whatsapp_groupchat", "have_connect", "marketing_subs",
-        ]].copy()
-        preview["whatsapp_groupchat"] = [
-            repo.db_to_bool_label(row.get("whatsapp_groupchat")) for row in attendee_rows
-        ]
-        preview["have_connect"] = [
-            repo.db_to_bool_label(row.get("have_connect")) for row in attendee_rows
-        ]
-        preview["marketing_subs"] = [
-            repo.db_to_bool_label(row.get("marketing_subs")) for row in attendee_rows
-        ]
-        preview["profile_completeness"] = [f"{profile_completion_status(row)[0]:.0%}" for row in attendee_rows]
-        preview["missing_fields"] = [", ".join(profile_completion_status(row)[1]) or "-" for row in attendee_rows]
-        preview.columns = [
-            "Registration code", "Participant ID", "Name", "Email", "Phone", "Birthday",
-            "WhatsApp group", "Connect account", "Marketing subscription",
-            "Profile completeness", "Missing fields",
-        ]
-        st.dataframe(preview, hide_index=True, use_container_width=True)
-    else:
-        st.info("No attendees found for this event.")
-
     sync_result = st.session_state.pop(f"profile_sync_result_{event_id}", None)
+    worksheet_name = str(event_id)
+    google_configured = google_forms.is_configured(st.secrets)
+    upload_version_key = f"profile_upload_version_{event_id}"
+    upload_version = st.session_state.get(upload_version_key, 0)
+
+    title_col, sync_col, upload_col = st.columns([6, 1, 1])
+    with title_col:
+        st.markdown("#### Participant Profiles")
+    with sync_col:
+        sync_clicked = st.button(
+            "Sync",
+            type="primary",
+            key=f"sync_google_profiles_{event_id}",
+            disabled=not google_configured,
+            help=f"Sync worksheet {worksheet_name}",
+        )
+    with upload_col:
+        with st.popover("Upload"):
+            uploaded = st.file_uploader(
+                "CSV or Excel file",
+                type=["csv", "xlsx"],
+                key=f"profile_upload_{event_id}_{upload_version}",
+                label_visibility="collapsed",
+            )
+            apply_upload = st.button(
+                "Apply upload",
+                type="primary",
+                disabled=uploaded is None,
+                key=f"apply_profile_upload_{event_id}_{upload_version}",
+            )
+
+    if sync_clicked:
+        try:
+            sheet_df = google_forms.load_profile_completion_responses(
+                st.secrets,
+                worksheet_name=worksheet_name,
+            )
+            if sheet_df.empty:
+                st.warning(f"Worksheet {worksheet_name} has no response rows.")
+            else:
+                result = repo.import_profile_completion_responses(
+                    sheet_df.to_dict("records"),
+                    event_id=event_id,
+                )
+                result["source"] = f"worksheet {worksheet_name}"
+                st.session_state[f"profile_sync_result_{event_id}"] = result
+                st.rerun()
+        except Exception as exc:
+            st.error(f"Could not sync worksheet {worksheet_name}: {exc}")
+
+    if apply_upload and uploaded is not None:
+        try:
+            if uploaded.name.lower().endswith(".csv"):
+                upload_df = pd.read_csv(uploaded, dtype=str, keep_default_na=False)
+            else:
+                upload_df = pd.read_excel(uploaded, dtype=str, keep_default_na=False)
+            if upload_df.empty:
+                st.warning("The uploaded file has no response rows.")
+            else:
+                result = repo.import_profile_completion_responses(
+                    upload_df.to_dict("records"),
+                    event_id=event_id,
+                )
+                result["source"] = "uploaded profile sheet"
+                st.session_state[f"profile_sync_result_{event_id}"] = result
+                st.session_state[upload_version_key] = upload_version + 1
+                st.rerun()
+        except Exception as exc:
+            st.error(f"Could not read or apply the uploaded file: {exc}")
+
+    if not google_configured:
+        st.caption("Google Sheet access is not configured yet; Upload remains available.")
     if sync_result:
         render_profile_sync_result(sync_result)
 
-    st.markdown("#### Update Participant Profile")
-    worksheet_name = str(event_id)
-    st.markdown("##### Sync from Google Sheets")
-    st.caption(
-        f"Reads worksheet “{worksheet_name}” and updates matching attendees for event {event_id}. "
-        "Only non-empty profile fields are applied."
-    )
-    if google_forms.is_configured(st.secrets):
-        if st.button(
-            f"Sync worksheet {worksheet_name}",
-            type="primary",
-            use_container_width=True,
-            key=f"sync_google_profiles_{event_id}",
-        ):
-            try:
-                sheet_df = google_forms.load_profile_completion_responses(
-                    st.secrets,
-                    worksheet_name=worksheet_name,
-                )
-                if sheet_df.empty:
-                    st.warning(f"Worksheet {worksheet_name} has no response rows.")
-                else:
-                    result = repo.import_profile_completion_responses(
-                        sheet_df.to_dict("records"),
-                        event_id=event_id,
-                    )
-                    result["source"] = f"worksheet {worksheet_name}"
-                    st.session_state[f"profile_sync_result_{event_id}"] = result
-                    st.rerun()
-            except Exception as exc:
-                st.error(f"Could not sync worksheet {worksheet_name}: {exc}")
+    changes_by_participant = {
+        str(change["participant_id"]): change
+        for change in (sync_result or {}).get("changes", [])
+    }
+    unique_participants = {}
+    for row in attendee_rows:
+        unique_participants.setdefault(str(row.get("participant_id")), row)
+
+    profile_rows = []
+    for row in unique_participants.values():
+        participant_id = str(row.get("participant_id") or "")
+        score, missing, _ = profile_completion_status(row)
+        change = changes_by_participant.get(participant_id)
+        before_score = profile_completion_status(change["before"])[0] if change else None
+        updated_fields = (
+            ", ".join(
+                PROFILE_FIELD_LABELS.get(field, field.replace("_", " ").title())
+                for field in change.get("updated_fields", [])
+            )
+            if change
+            else "-"
+        )
+        profile_rows.append({
+            "Registration code": row.get("registration_id") or "-",
+            "Participant ID": participant_id,
+            "Name": row.get("participant_name") or "-",
+            "Email": row.get("email") or "-",
+            "Phone": str(row.get("phone_number")) if row.get("phone_number") else "-",
+            "Address": row.get("address") or "-",
+            "City": row.get("city") or "-",
+            "Country": row.get("country") or "-",
+            "Birthday": row.get("dob") or "-",
+            "WhatsApp group": repo.db_to_bool_label(row.get("whatsapp_groupchat")),
+            "Connect account": repo.db_to_bool_label(row.get("have_connect")),
+            "Marketing subscription": repo.db_to_bool_label(row.get("marketing_subs")),
+            "Previous profile %": f"{before_score:.0%}" if before_score is not None else "-",
+            "Profile completeness": f"{score:.0%}",
+            "Change": f"{score - before_score:+.0%}" if before_score is not None else "-",
+            "Updated fields": updated_fields,
+            "Missing fields": ", ".join(missing) or "-",
+        })
+
+    if profile_rows:
+        st.dataframe(pd.DataFrame(profile_rows), hide_index=True, use_container_width=True)
     else:
-        missing = ", ".join(google_forms.missing_setup_items(st.secrets))
-        st.info(f"Configure Google Sheet access to enable direct sync. Missing: {missing}")
-
-    st.markdown("##### Upload an exported sheet")
-    st.caption(
-        "Upload the completed event Google Sheet. Matching rows update the current participant records by registration code and participant ID. "
-        "Recommended columns: registration_id, participant_id, participant_name, email, phone_number, "
-        "address, city, country, dob, whatsapp_groupchat, have_connect, marketing_subs."
-    )
-    upload_version_key = f"profile_upload_version_{event_id}"
-    upload_version = st.session_state.get(upload_version_key, 0)
-    uploaded = st.file_uploader(
-        "Upload completed profile sheet",
-        type=["csv", "xlsx"],
-        key=f"profile_upload_{event_id}_{upload_version}",
-    )
-    if uploaded is None:
-        return
-    try:
-        df = pd.read_csv(uploaded) if uploaded.name.lower().endswith(".csv") else pd.read_excel(uploaded)
-    except Exception as exc:
-        st.error(f"Could not read uploaded file: {exc}")
-        return
-    if df.empty:
-        st.warning("The uploaded file has no rows.")
-        return
-
-    import_profile_dataframe(
-        df,
-        event_id,
-        "Update participant profiles",
-        f"import_uploaded_profiles_{event_id}",
-        on_success=lambda: st.session_state.__setitem__(upload_version_key, upload_version + 1),
-    )
+        st.info("No attendees found for this event.")
 
 
 events = repo.events_with_stats()
@@ -913,6 +906,26 @@ with tab_post:
     c2.metric("Check-in", checked)
     c3.metric("No Show", no_show)
     c4.metric("Attendance Rate", f"{attendance_rate:.0%}")
+
+    st.subheader("Post-event Feedback")
+    feedback_url = google_forms.build_post_event_feedback_url(selected_event)
+    with st.container(border=True):
+        qr_col, feedback_col = st.columns([1, 2])
+        with qr_col:
+            feedback_qr = qr_png_bytes(feedback_url)
+            if feedback_qr:
+                st.image(feedback_qr, width=220)
+            else:
+                fallback_url = qr_fallback_image_url(feedback_url)
+                if fallback_url:
+                    st.image(fallback_url, width=240)
+        with feedback_col:
+            st.markdown("#### Share the event feedback form")
+            st.write(
+                "Participants can scan this QR code to open the feedback form. "
+                f"Event {event_id} and the event name are pre-filled automatically."
+            )
+            st.link_button("Open feedback form", feedback_url)
 
     if df.empty:
         st.info("No attendee data yet.")
