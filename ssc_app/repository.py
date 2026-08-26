@@ -298,7 +298,6 @@ def split_events_for_home():
 
     return past, upcoming
 
-
 def dashboard_counts():
     with connect() as connection:
         return {
@@ -794,6 +793,29 @@ def _normalise_date_import(value):
     return parsed.date().isoformat()
 
 
+def _normalise_phone_import(value):
+    """Keep phone numbers as text and preserve/restore international + prefixes."""
+    value = _blank_to_none(value)
+    if value is None:
+        return None
+    if isinstance(value, float) and value.is_integer():
+        text = str(int(value))
+    else:
+        text = str(value).strip()
+    if text.startswith("'"):
+        text = text[1:].strip()
+    if text.startswith("00"):
+        return "+" + text[2:]
+    if text.startswith("+"):
+        return text
+    digits = re.sub(r"[\s().-]+", "", text)
+    # Dutch international numbers exported as numeric cells lose the leading
+    # plus. Restore it for values such as 31616345679.
+    if digits.isdigit() and digits.startswith("31") and 10 <= len(digits) <= 15:
+        return "+" + digits
+    return text
+
+
 def _clean_profile_import_record(record):
     clean = {
         "event_id": _import_value(record, "event_id"),
@@ -801,7 +823,7 @@ def _clean_profile_import_record(record):
         "participant_id": _import_value(record, "participant_id"),
         "participant_name": _import_value(record, "participant_name"),
         "email": _import_value(record, "email"),
-        "phone_number": _import_value(record, "phone_number"),
+        "phone_number": _normalise_phone_import(_import_value(record, "phone_number")),
         "address": _import_value(record, "address"),
         "city": _import_value(record, "city"),
         "country": _import_value(record, "country"),
