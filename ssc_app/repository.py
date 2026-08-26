@@ -262,41 +262,15 @@ def home_past_kpis():
 
 
 def split_events_for_home():
-    events = events_with_stats()
-
-    if not events:
+    all_events = pd.DataFrame(events_with_stats())
+    if all_events.empty:
         return [], []
-
-    now = pd.Timestamp.now(tz="UTC")
-
-    for event in events:
-        event_datetime = pd.to_datetime(
-            event.get("start_datetime"),
-            utc=True,
-            errors="coerce",
-        )
-
-        event["_start_datetime_parsed"] = event_datetime
-
-    valid_events = [
-        event
-        for event in events
-        if not pd.isna(event["_start_datetime_parsed"])
-    ]
-
-    past = [
-        event
-        for event in valid_events
-        if event["_start_datetime_parsed"] < now
-    ]
-
-    upcoming = [
-        event
-        for event in valid_events
-        if event["_start_datetime_parsed"] >= now
-    ]
-
-    return past, upcoming
+    all_events["start_ts"] = pd.to_datetime(all_events["start_datetime"], errors="coerce")
+    all_events["end_ts"] = pd.to_datetime(all_events["end_datetime"], errors="coerce")
+    now = pd.Timestamp.now()
+    upcoming = all_events[all_events["start_ts"] >= now].sort_values("start_ts", ascending=True).head(3)
+    past = all_events[all_events["end_ts"] < now].sort_values("end_ts", ascending=False).head(3)
+    return past.to_dict("records"), upcoming.to_dict("records")
 
 
 def dashboard_counts():
@@ -462,16 +436,104 @@ def upsert_participant(data):
 
 
 def participant_already_registered(connection, event_id, participant_id):
-    return connection.execute(
+    return existing_attendee_registration(connection, event_id, participant_id) is not None
+
+
+def existing_attendee_registration(connection, event_id, participant_id):
+    """Return the active registration containing this attendee for an event."""
+    return _one(
+        connection,
         """
-        SELECT 1
+        SELECT er.registration_id, er.status, era.role, era.attendance_status
         FROM event_registration er
         JOIN event_registered_attendee era ON era.registration_id = er.registration_id
         WHERE er.event_id=? AND era.participant_id=? AND er.status != 'Cancelled'
+        ORDER BY er.registration_id DESC
         LIMIT 1
         """,
         (int(event_id), participant_id),
-    ).fetchone() is not None
+    )
+
+
+def registration_conflicts_for_person(event_id, person):
+    """Find active registrations created by or containing a known participant."""
+    participant_id = _blank_to_none(person.get("participant_id"))
+    email = _blank_to_none(person.get("email"))
+    phone = _blank_to_none(person.get("phone_number"))
+    email = str(email).strip().lower() if email else None
+    phone = str(phone).strip() if phone else None
+
+    with connect() as connection:
+        participant = None
+        if participant_id:
+            participant = _one(
+                connection,
+                "SELECT participant_id, participant_name FROM participants WHERE participant_id=?",
+                (str(participant_id).strip(),),
+            )
+        if participant is None and email:
+            participant = _one(
+                connection,
+                "SELECT participant_id, participant_name FROM participants WHERE lower(email)=?",
+                (email,),
+            )
+        if participant is None and phone:
+            participant = _one(
+                connection,
+                "SELECT participant_id, participant_name FROM participants WHERE phone_number=?",
+                (phone,),
+            )
+        if participant is None:
+            return []
+
+        pid = participant["participant_id"]
+        conflicts = {}
+        for row in connection.execute(
+            """
+            SELECT registration_id, status
+            FROM event_registration
+            WHERE event_id=? AND registered_by=? AND status != 'Cancelled'
+            ORDER BY registration_id DESC
+            """,
+            (int(event_id), pid),
+        ).fetchall():
+            item = dict(row)
+            item.update({
+                "participant_id": pid,
+                "participant_name": participant.get("participant_name"),
+                "is_registrant": True,
+                "is_attendee": False,
+                "attendee_role": None,
+            })
+            conflicts[item["registration_id"]] = item
+
+        for row in connection.execute(
+            """
+            SELECT er.registration_id, er.status, era.role AS attendee_role
+            FROM event_registration er
+            JOIN event_registered_attendee era ON era.registration_id=er.registration_id
+            WHERE er.event_id=? AND era.participant_id=? AND er.status != 'Cancelled'
+            ORDER BY er.registration_id DESC
+            """,
+            (int(event_id), pid),
+        ).fetchall():
+            item = dict(row)
+            existing = conflicts.setdefault(
+                item["registration_id"],
+                {
+                    "registration_id": item["registration_id"],
+                    "status": item["status"],
+                    "participant_id": pid,
+                    "participant_name": participant.get("participant_name"),
+                    "is_registrant": False,
+                    "is_attendee": False,
+                    "attendee_role": None,
+                },
+            )
+            existing["is_attendee"] = True
+            existing["attendee_role"] = item.get("attendee_role")
+
+        return list(conflicts.values())
 
 
 def existing_registration_by_email(event_id, email):
@@ -499,11 +561,26 @@ def create_registration_group(event_id, registered_by, attendees, channel, notes
     valid = []
     skipped = []
     with transaction(current_operator(), immediate=True) as connection:
+        # Serialize registration creation per event so two simultaneous submits
+        # cannot both pass the duplicate-attendee check.
+        connection.execute(
+            "SELECT pg_advisory_xact_lock(hashtext(?))",
+            (f"registration:{int(event_id)}",),
+        )
+        seen_participant_ids = set()
         for attendee in attendees:
-            if participant_already_registered(connection, event_id, attendee["participant_id"]):
-                skipped.append(attendee.get("label") or attendee["participant_id"])
-            else:
-                valid.append(attendee)
+            participant_id = attendee["participant_id"]
+            label = attendee.get("label") or participant_id
+            if participant_id in seen_participant_ids:
+                skipped.append(f"{label} (entered more than once)")
+                continue
+            seen_participant_ids.add(participant_id)
+
+            existing = existing_attendee_registration(connection, event_id, participant_id)
+            if existing:
+                skipped.append(f"{label} ({existing['registration_id']})")
+                continue
+            valid.append(attendee)
         if not valid:
             return None, skipped
 
@@ -592,6 +669,7 @@ def check_in(registration_id, participant_id):
 
 
 PROFILE_IMPORT_ALIASES = {
+    "event_id": {"event_id", "eventid", "event", "ssc_event_id", "ssceventid"},
     "registration_id": {
         "registration_id", "registrationid", "registration_code", "registrationcode",
         "registration", "code", "for_ssc_use_only_registration_code",
@@ -661,6 +739,7 @@ def _normalise_date_import(value):
 
 def _clean_profile_import_record(record):
     clean = {
+        "event_id": _import_value(record, "event_id"),
         "registration_id": _import_value(record, "registration_id"),
         "participant_id": _import_value(record, "participant_id"),
         "participant_name": _import_value(record, "participant_name"),
@@ -678,6 +757,8 @@ def _clean_profile_import_record(record):
         clean["email"] = str(clean["email"]).strip().lower()
     if clean["registration_id"]:
         clean["registration_id"] = str(clean["registration_id"]).strip()
+    if clean["event_id"]:
+        clean["event_id"] = str(clean["event_id"]).strip()
     if clean["participant_id"]:
         clean["participant_id"] = str(clean["participant_id"]).strip()
     return clean
@@ -711,12 +792,27 @@ def _find_profile_import_target(connection, clean, event_id=None):
     name = (clean.get("participant_name") or "").strip().lower()
 
     if participant_id:
-        row = connection.execute(
-            "SELECT participant_id FROM participants WHERE participant_id=?",
-            (participant_id,),
-        ).fetchone()
+        if event_id is None:
+            row = connection.execute(
+                "SELECT participant_id FROM participants WHERE participant_id=?",
+                (participant_id,),
+            ).fetchone()
+        else:
+            row = connection.execute(
+                """
+                SELECT p.participant_id
+                FROM participants p
+                JOIN event_registered_attendee era ON era.participant_id=p.participant_id
+                JOIN event_registration er ON er.registration_id=era.registration_id
+                WHERE p.participant_id=? AND er.event_id=? AND er.status != 'Cancelled'
+                LIMIT 1
+                """,
+                (participant_id, int(event_id)),
+            ).fetchone()
         if row:
             return participant_id, None
+        if event_id is not None:
+            return None, f"Participant {participant_id} is not registered for event {event_id}."
 
     if registration_id:
         targets = _registration_attendee_targets(connection, registration_id, event_id)
@@ -766,6 +862,19 @@ def import_profile_completion_responses(records, event_id=None):
     with transaction(current_operator(), immediate=True) as connection:
         for row_number, record in enumerate(records, start=2):
             clean = _clean_profile_import_record(record)
+            row_event_id = clean.get("event_id")
+            if event_id is not None and row_event_id:
+                try:
+                    matches_event = int(float(row_event_id)) == int(event_id)
+                except (TypeError, ValueError):
+                    matches_event = str(row_event_id).strip() == str(event_id)
+                if not matches_event:
+                    result["skipped"] += 1
+                    result["errors"].append({
+                        "row": row_number,
+                        "reason": f"Response belongs to event {row_event_id}, not event {event_id}.",
+                    })
+                    continue
             participant_id, error = _find_profile_import_target(connection, clean, event_id)
             if error:
                 result["skipped"] += 1
