@@ -1,5 +1,3 @@
-import json
-
 import pandas as pd
 import streamlit as st
 
@@ -44,11 +42,25 @@ if records:
             elif column == "attendance_status":
                 changes[column] = st.selectbox(column, repo.ATTENDANCE_STATUSES, index=repo.ATTENDANCE_STATUSES.index(current or "Not Checked In"))
             elif column == "channel":
-                changes[column] = st.selectbox(column, repo.CHANNELS, index=repo.CHANNELS.index(current or "Connect"))
+                current_channel = repo.normalize_registration_channel(current or "Connect")
+                channel_options = list(dict.fromkeys([*repo.CHANNELS, current_channel]))
+                changes[column] = st.selectbox(
+                    column,
+                    channel_options,
+                    index=channel_options.index(current_channel),
+                    accept_new_options=True,
+                    placeholder="Select or enter a channel",
+                )
             elif column == "role":
                 changes[column] = st.selectbox(column, repo.ROLES, index=repo.ROLES.index(current or "Guest"))
-            elif column in {"is_archived", "need_buddy", "whatsapp_groupchat", "have_connect", "marketing_subs"}:
-                changes[column] = st.selectbox(column, [None, 0, 1], index=[None, 0, 1].index(current if current in [None, 0, 1] else int(current)))
+            elif column in {"is_archived", "need_buddy", "whatsapp_groupchat", "have_connect", "marketing_subs", "blocked_flag"}:
+                bool_values = [None, False, True]
+                current_bool = None if current is None else bool(current)
+                changes[column] = st.selectbox(
+                    column,
+                    bool_values,
+                    index=bool_values.index(current_bool),
+                )
             else:
                 changes[column] = st.text_input(column, value="" if current is None else str(current))
 
@@ -89,12 +101,12 @@ else:
     c1, c2 = st.columns(2)
     with c1:
         st.caption("Before")
-        st.json(json.loads(entry["before_json"]) if entry.get("before_json") else None)
+        st.json(repo.audit_payload(entry, "before_json"))
     with c2:
         st.caption("After")
-        st.json(json.loads(entry["after_json"]) if entry.get("after_json") else None)
+        st.json(repo.audit_payload(entry, "after_json"))
 
-    can_undo = entry["action"] == "UPDATE" and not int(entry.get("undone") or 0)
+    can_undo = entry["action"] == "UPDATE" and not bool(entry.get("undone"))
     if st.button("Undo Action", disabled=not can_undo, type="primary"):
         try:
             undo_id = repo.undo_update(selected_audit_id)

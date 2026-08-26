@@ -1,4 +1,4 @@
-from datetime import datetime, time
+from datetime import date, datetime, time
 
 import streamlit as st
 
@@ -58,6 +58,47 @@ with st.expander("Need a new event type?", expanded=False):
                 st.success(f"Added event type {etype_id}.")
                 st.rerun()
 
+with st.expander("Need a new partner?", expanded=False):
+    with st.form("new_partner", clear_on_submit=True):
+        c1, c2 = st.columns(2)
+        with c1:
+            partner_name = st.text_input("Partner name *")
+            partner_type = st.text_input("Partner type")
+            partner_street = st.text_input("Street + number")
+            partner_postal = st.text_input("Postal code")
+            partner_city = st.text_input("City")
+            partner_country = st.text_input("Country", value="NL")
+        with c2:
+            contact_person = st.text_input("Contact person")
+            partner_phone = st.text_input("Phone number")
+            partner_email = st.text_input("Email address")
+            partner_website = st.text_input("Website")
+            partner_status = st.selectbox("Status", repo.PARTNER_STATUSES)
+            partner_since = st.number_input(
+                "Partner since (year)", min_value=1900, max_value=date.today().year,
+                value=date.today().year, step=1,
+            )
+        if st.form_submit_button("Add partner", use_container_width=True, type="primary"):
+            if not partner_name.strip():
+                st.error("Partner name is required.")
+            else:
+                partner_id = repo.create_partner({
+                    "partner_name": partner_name,
+                    "partner_type": partner_type,
+                    "street_number": partner_street,
+                    "postal_code": partner_postal,
+                    "city": partner_city,
+                    "country": partner_country,
+                    "contact_person": contact_person,
+                    "phone_number": partner_phone,
+                    "email_address": partner_email.strip().lower(),
+                    "website": partner_website,
+                    "status": partner_status,
+                    "partner_since": int(partner_since),
+                })
+                st.success(f"Added partner {partner_id}.")
+                st.rerun()
+
 colored_heading("New Event Details", PRIMARY)
 locations = repo.locations()
 types = repo.event_types()
@@ -81,7 +122,7 @@ else:
         end_date = c2.date_input("End date")
         end_time = c2.time_input("End time", value=time(20, 0))
         c3, c4 = st.columns(2)
-        age_rating = c3.text_input("Age rating", value="18+")
+        age_rating = c3.selectbox("Age rating", ["18+", "12-18", "Everyone"])
         ticket_cost = c4.number_input("Ticket cost", min_value=0.0, value=0.0, step=1.0)
         st.markdown("**Accessibility**")
         accessibility_cols = st.columns(2)

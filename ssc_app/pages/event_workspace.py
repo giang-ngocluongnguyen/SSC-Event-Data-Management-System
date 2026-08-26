@@ -30,21 +30,76 @@ page_header(
 )
 
 
-def participant_inputs(prefix, require_contact=True):
+def _participant_option_label(row):
+    contact_parts = [value for value in [row.get("email"), row.get("phone_number")] if value]
+    contact = " | ".join(str(value) for value in contact_parts) or "No contact details"
+    last_event = row.get("last_event_attended") or "No attended event"
+    blocked = "🚫 BLOCKED — " if bool(row.get("blocked_flag")) else ""
+    return (
+        f"{blocked}{row.get('participant_name') or 'Unnamed'} — {contact} "
+        f"— Last attended: {last_event} [{row['participant_id']}]"
+    )
+
+
+def _load_participant_choice(prefix, participant_lookup):
+    choice = st.session_state.get(f"{prefix}_participant_choice")
+    selected = participant_lookup.get(choice)
+    if selected:
+        st.session_state[f"{prefix}_participant_id"] = selected.get("participant_id")
+        st.session_state[f"{prefix}_name"] = selected.get("participant_name") or ""
+        st.session_state[f"{prefix}_email"] = selected.get("email") or ""
+        st.session_state[f"{prefix}_phone"] = selected.get("phone_number") or ""
+        st.session_state[f"{prefix}_address"] = selected.get("address") or ""
+        st.session_state[f"{prefix}_city"] = selected.get("city") or ""
+        st.session_state[f"{prefix}_country"] = selected.get("country") or "NL"
+        st.session_state[f"{prefix}_whatsapp"] = repo.db_to_bool_label(selected.get("whatsapp_groupchat"))
+        st.session_state[f"{prefix}_connect"] = repo.db_to_bool_label(selected.get("have_connect"))
+        st.session_state[f"{prefix}_marketing"] = repo.db_to_bool_label(selected.get("marketing_subs"))
+        return
+
+    st.session_state[f"{prefix}_participant_id"] = None
+    st.session_state[f"{prefix}_name"] = str(choice or "").strip()
+    for field in ["email", "phone", "address", "city"]:
+        st.session_state[f"{prefix}_{field}"] = ""
+    st.session_state[f"{prefix}_country"] = "NL"
+    for field in ["whatsapp", "connect", "marketing"]:
+        st.session_state[f"{prefix}_{field}"] = repo.BOOL_OPTIONS[0]
+
+
+def participant_inputs(prefix, participant_rows, require_contact=True):
+    participant_lookup = {_participant_option_label(row): row for row in participant_rows}
+    choice = st.selectbox(
+        "Name *",
+        list(participant_lookup),
+        index=None,
+        key=f"{prefix}_participant_choice",
+        placeholder="Search an existing participant or enter a new name",
+        accept_new_options=True,
+        on_change=_load_participant_choice,
+        args=(prefix, participant_lookup),
+    )
+    selected = participant_lookup.get(choice)
+    if selected and bool(selected.get("blocked_flag")):
+        st.markdown(
+            "<div style='color:#d00000; font-weight:700; margin:-0.25rem 0 0.75rem;'>"
+            "⚠ This participant is marked as blocked.</div>",
+            unsafe_allow_html=True,
+        )
+
     c1, c2 = st.columns(2)
     with c1:
-        name = st.text_input("Name *", key=f"{prefix}_name")
         email = st.text_input("Email", key=f"{prefix}_email").strip().lower()
         phone = st.text_input("Phone number", key=f"{prefix}_phone")
-    with c2:
         address = st.text_input("Address", key=f"{prefix}_address")
         city = st.text_input("City", key=f"{prefix}_city")
+    with c2:
         country = st.text_input("Country", value="NL", key=f"{prefix}_country")
         whatsapp = st.selectbox("In WhatsApp groupchat?", repo.BOOL_OPTIONS, key=f"{prefix}_whatsapp")
         connect = st.selectbox("Has Connect account?", repo.BOOL_OPTIONS, key=f"{prefix}_connect")
         marketing = st.selectbox("Marketing subscription?", repo.BOOL_OPTIONS, key=f"{prefix}_marketing")
     return {
-        "participant_name": name,
+        "participant_id": st.session_state.get(f"{prefix}_participant_id"),
+        "participant_name": st.session_state.get(f"{prefix}_name", str(choice or "").strip()),
         "email": email,
         "phone_number": phone,
         "address": address,
@@ -496,7 +551,14 @@ with tab_registration:
     colored_heading("Registration details", PINK)
     registration_version = st.session_state.get(f"registration_form_version_{event_id}", 0)
     registration_prefix = f"registration_{event_id}_{registration_version}"
-    channel = st.selectbox("Registration channel", repo.CHANNELS, key=f"{registration_prefix}_channel")
+    channel = st.selectbox(
+        "Registration channel",
+        repo.CHANNELS,
+        key=f"{registration_prefix}_channel",
+        accept_new_options=True,
+        placeholder="Select or enter a registration channel",
+    )
+    channel = repo.normalize_registration_channel(channel)
     immediate_checkin = channel == "Walk-in"
     if immediate_checkin:
         st.markdown(
@@ -505,7 +567,8 @@ with tab_registration:
         )
 
     st.markdown("#### Main Registrant")
-    main = participant_inputs(f"{registration_prefix}_main", require_contact=True)
+    registration_participants = repo.participants_for_registration()
+    main = participant_inputs(f"{registration_prefix}_main", registration_participants, require_contact=True)
     main_attends = st.checkbox("Main registrant will attend", value=True, key=f"{registration_prefix}_main_attends")
 
     attendees = []
@@ -513,14 +576,18 @@ with tab_registration:
         need_buddy = repo.bool_to_db(st.selectbox("Main attendee needs buddy?", repo.BOOL_OPTIONS, key=f"{registration_prefix}_main_buddy"))
     else:
         st.markdown("#### Main Attendee info")
-        main_attendee = participant_inputs(f"{registration_prefix}_main_attendee", require_contact=True)
+        main_attendee = participant_inputs(
+            f"{registration_prefix}_main_attendee", registration_participants, require_contact=True
+        )
         need_buddy = repo.bool_to_db(st.selectbox("Main attendee needs buddy?", repo.BOOL_OPTIONS, key=f"{registration_prefix}_main_attendee_buddy"))
 
     guest_count = st.number_input("Number of guests", min_value=0, max_value=10, value=0, step=1, key=f"{registration_prefix}_guest_count")
     guests = []
     for index in range(int(guest_count)):
         with st.expander(f"Guest {index + 1}", expanded=True):
-            guest = participant_inputs(f"{registration_prefix}_guest_{index}", require_contact=False)
+            guest = participant_inputs(
+                f"{registration_prefix}_guest_{index}", registration_participants, require_contact=False
+            )
             guest["need_buddy"] = repo.bool_to_db(st.selectbox("Guest needs buddy?", repo.BOOL_OPTIONS, key=f"{registration_prefix}_guest_{index}_buddy"))
             guests.append(guest)
 
