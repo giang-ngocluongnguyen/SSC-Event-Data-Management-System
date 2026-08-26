@@ -517,31 +517,33 @@ def profile_completion_tab(current_event, attendee_rows):
     upload_version_key = f"profile_upload_version_{event_id}"
     upload_version = st.session_state.get(upload_version_key, 0)
 
-    title_col, sync_col, upload_col = st.columns([6, 1, 1])
+    title_col, controls_col = st.columns([6.5, 1.5], gap="small")
     with title_col:
         st.markdown("#### Participant Profiles")
-    with sync_col:
-        sync_clicked = st.button(
-            "Sync",
-            type="primary",
-            key=f"sync_google_profiles_{event_id}",
-            disabled=not google_configured,
-            help=f"Sync worksheet {worksheet_name}",
-        )
-    with upload_col:
-        with st.popover("Upload"):
-            uploaded = st.file_uploader(
-                "CSV or Excel file",
-                type=["csv", "xlsx"],
-                key=f"profile_upload_{event_id}_{upload_version}",
-                label_visibility="collapsed",
-            )
-            apply_upload = st.button(
-                "Apply upload",
+    with controls_col:
+        sync_col, upload_col = st.columns(2, gap="small")
+        with sync_col:
+            sync_clicked = st.button(
+                "Sync",
                 type="primary",
-                disabled=uploaded is None,
-                key=f"apply_profile_upload_{event_id}_{upload_version}",
+                key=f"sync_google_profiles_{event_id}",
+                disabled=not google_configured,
+                help=f"Sync worksheet {worksheet_name}",
             )
+        with upload_col:
+            with st.popover("Upload"):
+                uploaded = st.file_uploader(
+                    "CSV or Excel file",
+                    type=["csv", "xlsx"],
+                    key=f"profile_upload_{event_id}_{upload_version}",
+                    label_visibility="collapsed",
+                )
+                apply_upload = st.button(
+                    "Apply upload",
+                    type="primary",
+                    disabled=uploaded is None,
+                    key=f"apply_profile_upload_{event_id}_{upload_version}",
+                )
 
     if sync_clicked:
         try:
