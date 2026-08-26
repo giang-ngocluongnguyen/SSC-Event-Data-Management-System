@@ -13,7 +13,7 @@ streamlit run app.py
 ## Supabase PostgreSQL setup
 
 1. Create the application tables in the `public` schema and load any sample data.
-2. Open Supabase **SQL Editor**, paste `supabase_setup.sql`, and run it once. It adds the supporting columns, PostgreSQL audit functions, and triggers without deleting application data.
+2. Open Supabase **SQL Editor**, paste `supabase_setup.sql`, and run it once. It adds the supporting columns (including `participants.blocked_flag`), PostgreSQL audit functions, and triggers without deleting application data.
 3. In Supabase, open **Connect → Session pooler → Python** and copy the host, port, database, and user values.
 4. Copy `.streamlit/secrets.example.toml` to `.streamlit/secrets.toml` and fill the `[database]` section with the Session pooler values and database password.
 5. Keep `.streamlit/secrets.toml` out of GitHub. For Streamlit Community Cloud, paste the same TOML into **Manage app → Settings → Secrets**.
@@ -41,11 +41,11 @@ GitHub stores the app code. All registrations, check-ins, profile updates, event
 ## Pages
 
 - `Home`: title `Special Social Event`, page pill `Home`, plain KPI metrics, max 3 upcoming/past event cards with title/divider/icon basic info, 70%-opacity teal cards, and bottom-page `Image for Event Card` upload that clears after saving.
-- `Create Event`: collapsible helper forms for new location and event type, plus the main new-event form with next `event_id` preview, accessibility tick boxes, and optional event-card image upload.
-- `Event Workspace`: select one event, see compact event info, register attendees, check in attendees by registration code, view checked-in attendees, collect profile completions through Google Forms upload/QR links, and run the post-event dashboard/no-show action. The selected attendee details use compact text instead of large metric cards.
+- `Create Event`: collapsible helper forms for new locations, event types, and partners, plus the main new-event form with next `event_id` preview, fixed age-rating choices (`18+`, `12-18`, `Everyone`), accessibility tick boxes, and optional event-card image upload.
+- `Event Workspace`: select one event, see compact event info, register attendees, check in attendees by registration code, view checked-in attendees, collect profile completions through Google Forms upload/QR links, and run the post-event dashboard/no-show action. Registration channels support the built-in values or a manually entered value. Participant name fields search active participant records by name/contact and show the last attended event; selecting a match preloads the profile fields and displays a red warning when `blocked_flag` is true.
 - During check-in, missing required contact info (`email` and/or `phone_number`) is flagged under the selected attendee card, with a manual contact-info update option for guests or partial profiles.
 - `Event Analytics`: post-event feedback QR for each event, completed feedback sheet upload/preview, and attendance table/charts.
-- `Database`: inspect full tables with `last_updated`, edit/archive records, delete transactional rows, view the latest 5 audit actions, and use the Undo Action button for supported updates.
+- `Database`: inspect full tables with `last_updated`, edit/archive records (including `participants.blocked_flag`), delete transactional rows, view the latest 5 audit actions, and use the Undo Action button for supported updates.
 - `Audit Log`: inspect database-level trigger audit entries with table, operator, and time filters.
 
 ## Theme
