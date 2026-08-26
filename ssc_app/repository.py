@@ -3,7 +3,6 @@ from datetime import date, datetime
 from pathlib import Path
 
 import pandas as pd
-from sqlalchemy.exc import IntegrityError
 
 from database import (
     MASTER_TABLES,
@@ -95,11 +94,6 @@ def _blank_to_none(value):
     if isinstance(value, date):
         return value.isoformat()
     return value
-
-
-def _phone_key(value):
-    """Return digits only so differently formatted versions compare equally."""
-    return re.sub(r"\D", "", str(value or ""))
 
 
 def _one(connection, sql, params=()):
@@ -831,63 +825,17 @@ def create_event_type(name):
 
 def create_partner(data):
     clean = {key: _blank_to_none(value) for key, value in data.items()}
-    clean["email_address"] = (
-        clean["email_address"].strip().lower() if clean.get("email_address") else None
-    )
-
-    if not clean.get("partner_name"):
-        raise ValueError("Partner name is required.")
-    if not clean.get("contact_person"):
-        raise ValueError("Contact person is required.")
-    if not clean.get("email_address") and not clean.get("phone_number"):
-        raise ValueError("Enter at least one contact method: email address or phone number.")
-
-    phone_key = _phone_key(clean.get("phone_number"))
-    if clean.get("phone_number") and not phone_key:
-        raise ValueError("Phone number must contain at least one digit.")
-
-    try:
-        with transaction(current_operator(), immediate=True) as connection:
-            if clean.get("email_address") and connection.execute(
-                """
-                SELECT 1 FROM partners
-                WHERE lower(btrim(email_address)) = ?
-                LIMIT 1
-                """,
-                (clean["email_address"],),
-            ).fetchone():
-                raise ValueError("This email address is already used by another partner.")
-
-            if phone_key and connection.execute(
-                """
-                SELECT 1 FROM partners
-                WHERE regexp_replace(COALESCE(phone_number, ''), '[^0-9]', '', 'g') = ?
-                LIMIT 1
-                """,
-                (phone_key,),
-            ).fetchone():
-                raise ValueError("This phone number is already used by another partner.")
-
-            clean["partner_id"] = _next_code(connection, "partners", "partner_id", "PAR", 3)
-            clean["is_archived"] = False
-            clean["last_updated"] = now_iso()
-            fields = ["partner_id", "partner_name", "partner_type", "street_number", "postal_code", "city",
-                      "country", "contact_person", "phone_number", "email_address", "website", "status", "partner_since", "is_archived", "last_updated"]
-            connection.execute(
-                f"INSERT INTO partners ({','.join(fields)}) VALUES ({','.join('?' for _ in fields)})",
-                [clean.get(field) for field in fields],
-            )
-            return clean["partner_id"]
-    except IntegrityError as exc:
-        constraint_name = getattr(getattr(exc, "orig", None), "diag", None)
-        constraint_name = getattr(constraint_name, "constraint_name", "") or ""
-        if "email" in constraint_name:
-            raise ValueError("This email address is already used by another partner.") from exc
-        if "phone" in constraint_name:
-            raise ValueError("This phone number is already used by another partner.") from exc
-        if "contact" in constraint_name:
-            raise ValueError("Contact person and at least one contact method are required.") from exc
-        raise
+    with transaction(current_operator(), immediate=True) as connection:
+        clean["partner_id"] = _next_code(connection, "partners", "partner_id", "PAR", 3)
+        clean["is_archived"] = False
+        clean["last_updated"] = now_iso()
+        fields = ["partner_id", "partner_name", "partner_type", "street_number", "postal_code", "city",
+                  "country", "contact_person", "phone_number", "email_address", "website", "status", "partner_since", "is_archived", "last_updated"]
+        connection.execute(
+            f"INSERT INTO partners ({','.join(fields)}) VALUES ({','.join('?' for _ in fields)})",
+            [clean.get(field) for field in fields],
+        )
+        return clean["partner_id"]
 
 
 def mark_remaining_no_show(event_id):
