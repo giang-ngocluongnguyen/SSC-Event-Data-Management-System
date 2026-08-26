@@ -69,7 +69,7 @@ with st.expander("Need a new partner?", expanded=False):
             partner_city = st.text_input("City")
             partner_country = st.text_input("Country", value="NL")
         with c2:
-            contact_person = st.text_input("Contact person")
+            contact_person = st.text_input("Contact person *")
             partner_phone = st.text_input("Phone number")
             partner_email = st.text_input("Email address")
             partner_website = st.text_input("Website")
@@ -81,6 +81,8 @@ with st.expander("Need a new partner?", expanded=False):
         if st.form_submit_button("Add partner", use_container_width=True, type="primary"):
             if not partner_name.strip():
                 st.error("Partner name is required.")
+            elif not contact_person.strip():
+                st.error("Contact person's details are required.")
             else:
                 partner_id = repo.create_partner({
                     "partner_name": partner_name,
