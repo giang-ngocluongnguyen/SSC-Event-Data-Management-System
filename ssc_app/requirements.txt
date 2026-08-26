@@ -1,4 +1,4 @@
-streamlit>=1.36
+streamlit>=1.49
 pandas>=2.0
 qrcode[pil]>=7.4
 openpyxl>=3.1
