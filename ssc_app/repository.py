@@ -1,7 +1,7 @@
 import re
 from datetime import date, datetime
 from pathlib import Path
-from datetime import date, datetime, timezone
+
 import pandas as pd
 
 from database import (
@@ -47,7 +47,7 @@ EDITABLE_COLUMNS = {
     "events": ["location_id", "event_type", "partner_id", "event_name", "start_datetime", "end_datetime", "age_rating", "ticket_cost", "accessibility", "event_image_path", "is_archived"],
     "locations": ["location_name", "street_number", "postal_code", "city", "country", "is_archived"],
     "event_types": ["etype_name", "is_archived"],
-    "participants": ["participant_name", "email", "phone_number", "address", "city", "country", "dob", "whatsapp_groupchat", "have_connect", "marketing_subs", "is_archived"],
+    "participants": ["participant_name", "email", "phone_number", "address", "city", "country", "dob", "whatsapp_groupchat", "have_connect", "marketing_subs", "blocked_flag", "is_archived"],
     "partners": ["partner_name", "partner_type", "street_number", "postal_code", "city", "country", "contact_person", "phone_number", "email_address", "website", "status", "partner_since", "is_archived"],
     "event_registration": ["channel", "status", "notes"],
     "event_registered_attendee": ["role", "need_buddy", "attendance_status", "checkin_datetime"],
@@ -58,11 +58,13 @@ BOOLEAN_COLUMNS = {
     "whatsapp_groupchat",
     "have_connect",
     "marketing_subs",
+    "blocked_flag",
 }
 
 
 def now_iso():
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return datetime.now().isoformat(sep=" ", timespec="seconds")
+
 
 def current_operator():
     try:
@@ -111,6 +113,14 @@ def db_to_bool_label(value):
     return "Yes" if bool(value) else "No"
 
 
+def normalize_registration_channel(value):
+    """Keep built-in and manually entered registration channels consistent."""
+    channel = str(value or "").strip()
+    if not channel:
+        raise ValueError("Registration channel is required.")
+    return channel.capitalize()
+
+
 def dob_to_date(value):
     if value is None or pd.isna(value) or str(value).strip() == "":
         return None
@@ -153,6 +163,31 @@ def event_by_id(event_id):
 def participants(include_archived=False):
     where = "1=1" if include_archived else _active_filter()
     return rows(f"SELECT * FROM participants WHERE {where} ORDER BY lower(participant_name)")
+
+
+def participants_for_registration():
+    """Active participants with their most recent attended event for typeahead labels."""
+    return rows(
+        """
+        SELECT p.*,
+               recent.event_name AS last_event_attended,
+               recent.start_datetime AS last_event_datetime
+        FROM participants p
+        LEFT JOIN LATERAL (
+            SELECT e.event_name, e.start_datetime
+            FROM event_registered_attendee era
+            JOIN event_registration er ON er.registration_id = era.registration_id
+            JOIN events e ON e.event_id = er.event_id
+            WHERE era.participant_id = p.participant_id
+              AND era.attendance_status = 'Attended'
+              AND er.status != 'Cancelled'
+            ORDER BY COALESCE(era.checkin_datetime, e.start_datetime) DESC
+            LIMIT 1
+        ) recent ON TRUE
+        WHERE COALESCE(p.is_archived, FALSE) IS FALSE
+        ORDER BY lower(p.participant_name), p.participant_id
+        """
+    )
 
 
 def partners(include_archived=False):
@@ -225,41 +260,17 @@ def home_past_kpis():
     result["attendance_rate"] = attended / total_attendees if total_attendees else 0
     return result
 
+
 def split_events_for_home():
     all_events = pd.DataFrame(events_with_stats())
-
     if all_events.empty:
         return [], []
-
-    all_events["start_ts"] = pd.to_datetime(
-        all_events["start_datetime"],
-        errors="coerce",
-        utc=True,
-    )
-
-    all_events["end_ts"] = pd.to_datetime(
-        all_events["end_datetime"],
-        errors="coerce",
-        utc=True,
-    )
-
-    now = pd.Timestamp.now(tz="UTC")
-
-    upcoming = (
-        all_events[all_events["start_ts"] >= now]
-        .sort_values("start_ts", ascending=True)
-        .head(3)
-    )
-
-    past = (
-        all_events[all_events["end_ts"] < now]
-        .sort_values("end_ts", ascending=False)
-        .head(3)
-    )
-
+    all_events["start_ts"] = pd.to_datetime(all_events["start_datetime"], errors="coerce")
+    all_events["end_ts"] = pd.to_datetime(all_events["end_datetime"], errors="coerce")
+    now = pd.Timestamp.now()
+    upcoming = all_events[all_events["start_ts"] >= now].sort_values("start_ts", ascending=True).head(3)
+    past = all_events[all_events["end_ts"] < now].sort_values("end_ts", ascending=False).head(3)
     return past.to_dict("records"), upcoming.to_dict("records")
-
-
 
 
 def dashboard_counts():
@@ -365,7 +376,10 @@ def upsert_participant(data):
     phone = clean.get("phone_number")
     with transaction(current_operator(), immediate=True) as connection:
         existing = None
-        if email:
+        requested_id = clean.get("participant_id")
+        if requested_id:
+            existing = _one(connection, "SELECT * FROM participants WHERE participant_id=?", (requested_id,))
+        if existing is None and email:
             existing = _one(connection, "SELECT * FROM participants WHERE lower(email)=?", (email,))
         if existing is None and phone:
             existing = _one(connection, "SELECT * FROM participants WHERE phone_number=?", (phone,))
@@ -375,6 +389,7 @@ def upsert_participant(data):
                 """
                 UPDATE participants
                 SET participant_name=COALESCE(?, participant_name),
+                    email=COALESCE(?, email),
                     phone_number=COALESCE(?, phone_number),
                     address=COALESCE(?, address),
                     city=COALESCE(?, city),
@@ -388,7 +403,7 @@ def upsert_participant(data):
                 WHERE participant_id=?
                 """,
                 (
-                    clean.get("participant_name"), clean.get("phone_number"), clean.get("address"),
+                    clean.get("participant_name"), email, clean.get("phone_number"), clean.get("address"),
                     clean.get("city"), clean.get("country"), clean.get("dob"),
                     clean.get("whatsapp_groupchat"), clean.get("have_connect"),
                     clean.get("marketing_subs"), now, existing["participant_id"],
@@ -454,6 +469,7 @@ def existing_registration_by_email(event_id, email):
 
 
 def create_registration_group(event_id, registered_by, attendees, channel, notes=None, immediate_checkin=False):
+    channel = normalize_registration_channel(channel)
     valid = []
     skipped = []
     with transaction(current_operator(), immediate=True) as connection:
@@ -503,7 +519,7 @@ def attendee_rows(event_id, include_attended=True):
         f"""
         SELECT era.registration_id, er.registered_by, rb.participant_name AS registered_by_name,
                era.participant_id, p.participant_name, p.email, p.phone_number, p.address, p.city, p.country,
-               p.dob, p.whatsapp_groupchat, p.have_connect, p.marketing_subs,
+               p.dob, p.whatsapp_groupchat, p.have_connect, p.marketing_subs, p.blocked_flag,
                era.role, era.need_buddy, era.attendance_status, era.checkin_datetime,
                er.channel, er.status AS registration_status, er.notes, er.datetime_registered,
                er.number_of_attendee,
@@ -878,6 +894,8 @@ def update_record(table, pk_values, changes):
     for key in BOOLEAN_COLUMNS & clean.keys():
         if clean[key] is not None:
             clean[key] = bool(clean[key])
+    if table == "event_registration" and clean.get("channel") is not None:
+        clean["channel"] = normalize_registration_channel(clean["channel"])
     if not clean:
         return 0
     where = " AND ".join(f"{column}=?" for column in PK_COLUMNS[table])
