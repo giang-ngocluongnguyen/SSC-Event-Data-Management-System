@@ -285,6 +285,40 @@ def profile_completion_status(row):
     return score, missing, missing_contact
 
 
+PROFILE_FIELD_LABELS = dict(PROFILE_COMPLETION_FIELDS)
+PROFILE_FIELD_LABELS["participant_name"] = "Name"
+
+
+def render_profile_sync_result(result):
+    source = result.get("source") or "profile responses"
+    st.success(
+        f"Synced {source}: updated {result['updated']} participant profile(s), "
+        f"found {result.get('unchanged', 0)} unchanged row(s), and skipped "
+        f"{result['skipped']} row(s)."
+    )
+    comparison_rows = []
+    for change in result.get("changes", []):
+        before_score = profile_completion_status(change["before"])[0]
+        after_score = profile_completion_status(change["after"])[0]
+        comparison_rows.append({
+            "Participant ID": change["participant_id"],
+            "Name": change.get("participant_name") or "-",
+            "Before": f"{before_score:.0%}",
+            "After": f"{after_score:.0%}",
+            "Change": f"{after_score - before_score:+.0%}",
+            "Updated fields": ", ".join(
+                PROFILE_FIELD_LABELS.get(field, field.replace("_", " ").title())
+                for field in change.get("updated_fields", [])
+            ),
+        })
+    if comparison_rows:
+        st.markdown("##### Profile completeness changes")
+        st.dataframe(pd.DataFrame(comparison_rows), hide_index=True, use_container_width=True)
+    if result.get("errors"):
+        st.warning("Some response rows were skipped. See details below.")
+        st.dataframe(pd.DataFrame(result["errors"]), hide_index=True, use_container_width=True)
+
+
 def should_show_profile_qr(row, threshold):
     score, _, missing_contact = profile_completion_status(row)
     return missing_contact or score < threshold
@@ -494,10 +528,8 @@ def import_profile_dataframe(df, event_id, button_label, key, on_success=None):
     st.dataframe(df.head(30), hide_index=True, use_container_width=True)
     if st.button(button_label, type="primary", use_container_width=True, key=key):
         result = repo.import_profile_completion_responses(df.to_dict("records"), event_id=event_id)
-        st.success(f"Updated {result['updated']} participant profile(s) in the current database. Skipped {result['skipped']} row(s).")
-        if result["errors"]:
-            st.warning("Some rows were skipped. See details below.")
-            st.dataframe(pd.DataFrame(result["errors"]), hide_index=True, use_container_width=True)
+        result["source"] = "uploaded profile sheet"
+        st.session_state[f"profile_sync_result_{event_id}"] = result
         if on_success:
             on_success()
         st.rerun()
@@ -515,14 +547,32 @@ def profile_completion_tab(current_event, attendee_rows):
 
     if attendee_rows:
         preview = pd.DataFrame(attendee_rows)[[
-            "registration_id", "participant_id", "participant_name", "email", "phone_number"
+            "registration_id", "participant_id", "participant_name", "email", "phone_number",
+            "dob", "whatsapp_groupchat", "have_connect", "marketing_subs",
         ]].copy()
+        preview["whatsapp_groupchat"] = [
+            repo.db_to_bool_label(row.get("whatsapp_groupchat")) for row in attendee_rows
+        ]
+        preview["have_connect"] = [
+            repo.db_to_bool_label(row.get("have_connect")) for row in attendee_rows
+        ]
+        preview["marketing_subs"] = [
+            repo.db_to_bool_label(row.get("marketing_subs")) for row in attendee_rows
+        ]
         preview["profile_completeness"] = [f"{profile_completion_status(row)[0]:.0%}" for row in attendee_rows]
         preview["missing_fields"] = [", ".join(profile_completion_status(row)[1]) or "-" for row in attendee_rows]
-        preview.columns = ["Registration code", "Participant ID", "Name", "Email", "Phone", "Profile completeness", "Missing fields"]
+        preview.columns = [
+            "Registration code", "Participant ID", "Name", "Email", "Phone", "Birthday",
+            "WhatsApp group", "Connect account", "Marketing subscription",
+            "Profile completeness", "Missing fields",
+        ]
         st.dataframe(preview, hide_index=True, use_container_width=True)
     else:
         st.info("No attendees found for this event.")
+
+    sync_result = st.session_state.pop(f"profile_sync_result_{event_id}", None)
+    if sync_result:
+        render_profile_sync_result(sync_result)
 
     st.markdown("#### Update Participant Profile")
     worksheet_name = str(event_id)
@@ -550,17 +600,9 @@ def profile_completion_tab(current_event, attendee_rows):
                         sheet_df.to_dict("records"),
                         event_id=event_id,
                     )
-                    st.success(
-                        f"Updated {result['updated']} participant profile(s). "
-                        f"Skipped {result['skipped']} row(s)."
-                    )
-                    if result["errors"]:
-                        st.warning("Some Google Sheet rows were skipped. See details below.")
-                        st.dataframe(
-                            pd.DataFrame(result["errors"]),
-                            hide_index=True,
-                            use_container_width=True,
-                        )
+                    result["source"] = f"worksheet {worksheet_name}"
+                    st.session_state[f"profile_sync_result_{event_id}"] = result
+                    st.rerun()
             except Exception as exc:
                 st.error(f"Could not sync worksheet {worksheet_name}: {exc}")
     else:
