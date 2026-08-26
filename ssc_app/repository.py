@@ -262,41 +262,15 @@ def home_past_kpis():
 
 
 def split_events_for_home():
-    events = events_with_stats()
-
-    if not events:
+    all_events = pd.DataFrame(events_with_stats())
+    if all_events.empty:
         return [], []
-
-    now = pd.Timestamp.now(tz="UTC")
-
-    for event in events:
-        event_datetime = pd.to_datetime(
-            event.get("start_datetime"),
-            utc=True,
-            errors="coerce",
-        )
-
-        event["_start_datetime_parsed"] = event_datetime
-
-    valid_events = [
-        event
-        for event in events
-        if not pd.isna(event["_start_datetime_parsed"])
-    ]
-
-    past = [
-        event
-        for event in valid_events
-        if event["_start_datetime_parsed"] < now
-    ]
-
-    upcoming = [
-        event
-        for event in valid_events
-        if event["_start_datetime_parsed"] >= now
-    ]
-
-    return past, upcoming
+    all_events["start_ts"] = pd.to_datetime(all_events["start_datetime"], errors="coerce")
+    all_events["end_ts"] = pd.to_datetime(all_events["end_datetime"], errors="coerce")
+    now = pd.Timestamp.now()
+    upcoming = all_events[all_events["start_ts"] >= now].sort_values("start_ts", ascending=True).head(3)
+    past = all_events[all_events["end_ts"] < now].sort_values("end_ts", ascending=False).head(3)
+    return past.to_dict("records"), upcoming.to_dict("records")
 
 
 def dashboard_counts():
@@ -714,17 +688,29 @@ PROFILE_IMPORT_ALIASES = {
     "address": {"address", "street_address", "streetaddress"},
     "city": {"city", "place_of_residence", "residence", "woonplaats"},
     "country": {"country", "country_code", "countrycode", "nationality"},
-    "dob": {"dob", "date_of_birth", "dateofbirth", "birth_date", "birthdate"},
-    "whatsapp_groupchat": {"whatsapp_groupchat", "whatsappgroupchat", "in_whatsapp_groupchat", "inwhatsappgroupchat", "in_groupchat"},
+    "dob": {
+        "dob", "date_of_birth", "dateofbirth", "birth_date", "birthdate",
+        "birthday", "birthday_date", "birthdaydate", "what_is_your_birthday",
+        "whatisyourbirthday",
+    },
+    "whatsapp_groupchat": {
+        "whatsapp_groupchat", "whatsappgroupchat", "in_whatsapp_groupchat",
+        "inwhatsappgroupchat", "in_groupchat", "whatsapp_group", "whatsappgroup",
+        "are_you_in_the_whatsapp_group", "areyouinthewhatsappgroup",
+        "are_you_in_the_ssc_whatsapp_group", "areyouinthesscwhatsappgroup",
+    },
     "have_connect": {
         "have_connect", "haveconnect", "connect", "connect_account", "has_connect_account",
         "hasconnectaccount", "had_ssc_connect_account", "hadsscconnectaccount",
         "has_ssc_connect_account", "hassscconnectaccount", "ssc_connect_account",
-        "sscconnectaccount",
+        "sscconnectaccount", "do_you_have_a_connect_account", "doyouhaveaconnectaccount",
+        "do_you_have_an_ssc_connect_account", "doyouhaveansscconnectaccount",
     },
     "marketing_subs": {
         "marketing_subs", "marketingsubs", "marketing_subscription", "marketingsubscription",
         "newsletter", "consent", "consent_to_update_profile", "consenttoupdateprofile",
+        "subscribe_to_newsletter", "subscribetonewsletter", "marketing_consent",
+        "marketingconsent", "receive_marketing_updates", "receivemarketingupdates",
     },
 }
 
@@ -733,12 +719,16 @@ def _normalise_import_key(value):
     return re.sub(r"[^a-z0-9]+", "", str(value or "").strip().lower())
 
 
-def _import_value(record, canonical_key):
+def _find_import_value(record, canonical_key):
     aliases = {_normalise_import_key(alias) for alias in PROFILE_IMPORT_ALIASES[canonical_key]}
     for key, value in record.items():
         if _normalise_import_key(key) in aliases:
-            return _blank_to_none(value)
-    return None
+            return True, _blank_to_none(value)
+    return False, None
+
+
+def _import_value(record, canonical_key):
+    return _find_import_value(record, canonical_key)[1]
 
 
 def _normalise_bool_import(value):
@@ -746,11 +736,26 @@ def _normalise_bool_import(value):
     if value is None:
         return None
     text = str(value).strip().lower()
+    if text in {"0", "false", "no", "n", "nee", "not checked", "unchecked", "disagree", "declined"}:
+        return False
+    if re.search(r"\b(no|not|nee|false|unchecked|disagree|declined)\b", text):
+        return False
     if text in {"1", "true", "yes", "y", "ja", "checked", "agree", "agreed"}:
         return True
-    if text in {"0", "false", "no", "n", "nee", "not checked", "disagree", "declined"}:
+    if re.search(r"\b(yes|ja|true|checked|agree|agreed)\b", text):
+        return True
+    # Google Forms checkbox cells contain the selected option text. Therefore,
+    # any other non-empty checkbox response means that the option was ticked.
+    return True
+
+
+def _import_checkbox_bool(record, canonical_key):
+    found, value = _find_import_value(record, canonical_key)
+    if not found:
+        return None
+    if value is None:
         return False
-    return None
+    return _normalise_bool_import(value)
 
 
 def _normalise_date_import(value):
@@ -775,9 +780,9 @@ def _clean_profile_import_record(record):
         "city": _import_value(record, "city"),
         "country": _import_value(record, "country"),
         "dob": _normalise_date_import(_import_value(record, "dob")),
-        "whatsapp_groupchat": _normalise_bool_import(_import_value(record, "whatsapp_groupchat")),
-        "have_connect": _normalise_bool_import(_import_value(record, "have_connect")),
-        "marketing_subs": _normalise_bool_import(_import_value(record, "marketing_subs")),
+        "whatsapp_groupchat": _import_checkbox_bool(record, "whatsapp_groupchat"),
+        "have_connect": _import_checkbox_bool(record, "have_connect"),
+        "marketing_subs": _import_checkbox_bool(record, "marketing_subs"),
     }
     if clean["email"]:
         clean["email"] = str(clean["email"]).strip().lower()
@@ -879,8 +884,25 @@ def _find_profile_import_target(connection, clean, event_id=None):
     return None, "No match. Include registration_id or participant_id."
 
 
+def _profile_comparison_value(value):
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, datetime):
+        return value.isoformat(sep=" ", timespec="seconds")
+    if isinstance(value, date):
+        return value.isoformat()
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+    return str(value).strip()
+
+
 def import_profile_completion_responses(records, event_id=None):
-    result = {"updated": 0, "skipped": 0, "errors": []}
+    result = {"updated": 0, "unchanged": 0, "skipped": 0, "errors": [], "changes": []}
     editable_fields = [
         "participant_name", "email", "phone_number", "address", "city", "country",
         "dob", "whatsapp_groupchat", "have_connect", "marketing_subs",
@@ -907,14 +929,28 @@ def import_profile_completion_responses(records, event_id=None):
                 result["errors"].append({"row": row_number, "reason": error})
                 continue
 
-            changes = {
+            requested_changes = {
                 field: clean[field]
                 for field in editable_fields
                 if clean.get(field) is not None
             }
-            if not changes:
+            if not requested_changes:
                 result["skipped"] += 1
                 result["errors"].append({"row": row_number, "reason": "No usable profile fields found."})
+                continue
+
+            before = _one(
+                connection,
+                "SELECT * FROM participants WHERE participant_id=?",
+                (participant_id,),
+            )
+            changes = {
+                field: value
+                for field, value in requested_changes.items()
+                if _profile_comparison_value(before.get(field)) != _profile_comparison_value(value)
+            }
+            if not changes:
+                result["unchanged"] += 1
                 continue
 
             assignments = ", ".join(f"{field}=?" for field in changes)
@@ -922,7 +958,20 @@ def import_profile_completion_responses(records, event_id=None):
                 f"UPDATE participants SET {assignments}, is_archived=FALSE, last_updated=? WHERE participant_id=?",
                 [*changes.values(), now_iso(), participant_id],
             )
+            after = _one(
+                connection,
+                "SELECT * FROM participants WHERE participant_id=?",
+                (participant_id,),
+            )
             result["updated"] += 1
+            result["changes"].append({
+                "row": row_number,
+                "participant_id": participant_id,
+                "participant_name": after.get("participant_name") or before.get("participant_name"),
+                "updated_fields": list(changes),
+                "before": before,
+                "after": after,
+            })
     return result
 
 
