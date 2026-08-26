@@ -36,8 +36,8 @@ def _participant_option_label(row):
     last_event = row.get("last_event_attended") or "No attended event"
     blocked = "🚫 BLOCKED — " if bool(row.get("blocked_flag")) else ""
     return (
-        f"{blocked}{row.get('participant_name') or 'Unnamed'} — {contact} "
-        f"— Last attended: {last_event} [{row['participant_id']}]"
+        f"{blocked}{row.get('participant_name') or 'Unnamed'} | {contact} "
+        f"| Last attended: {last_event} [{row['participant_id']}]"
     )
 
 
