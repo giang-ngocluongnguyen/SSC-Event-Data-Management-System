@@ -135,4 +135,6 @@ def load_profile_completion_responses(secrets, worksheet_name=None):
     client = gspread.authorize(credentials)
     spreadsheet = client.open_by_key(_spreadsheet_id(settings["spreadsheet"]))
     worksheet = spreadsheet.worksheet(worksheet_name or settings["worksheet"])
-    return pd.DataFrame(worksheet.get_all_records())
+    # Keep displayed values as strings so phone numbers such as +31616345679
+    # are not automatically converted to numeric values.
+    return pd.DataFrame(worksheet.get_all_records(numericise_ignore=["all"]))
