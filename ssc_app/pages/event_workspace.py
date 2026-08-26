@@ -803,10 +803,6 @@ with tab_checkin:
         with st.container(border=True):
             threshold = float(st.session_state.get("profile_completion_threshold", 0.7))
             qr_payload = profile_qr_payload(selected, threshold, selected_event)
-            qr_state_key = (
-                f"show_profile_qr_{event_id}_"
-                f"{selected['registration_id']}_{selected['participant_id']}"
-            )
 
             info_col, action_col = st.columns([1.35, 1], gap="large")
             with info_col:
@@ -814,14 +810,7 @@ with tab_checkin:
                 render_required_contact_followup(selected)
             with action_col:
                 if qr_payload:
-                    if st.button(
-                        "Generate profile QR for this attendee",
-                        use_container_width=True,
-                        key=f"generate_profile_qr_{event_id}_{selected['registration_id']}_{selected['participant_id']}",
-                    ):
-                        st.session_state[qr_state_key] = True
-                    if st.session_state.get(qr_state_key):
-                        render_profile_qr(qr_payload)
+                    render_profile_qr(qr_payload)
                 else:
                     st.success("This attendee is above the selected profile-completion threshold.")
                 if st.button("Check-in", type="primary", use_container_width=True):
