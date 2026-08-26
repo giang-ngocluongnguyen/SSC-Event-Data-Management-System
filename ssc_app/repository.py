@@ -262,15 +262,41 @@ def home_past_kpis():
 
 
 def split_events_for_home():
-    all_events = pd.DataFrame(events_with_stats())
-    if all_events.empty:
+    events = events_with_stats()
+
+    if not events:
         return [], []
-    all_events["start_ts"] = pd.to_datetime(all_events["start_datetime"], errors="coerce")
-    all_events["end_ts"] = pd.to_datetime(all_events["end_datetime"], errors="coerce")
-    now = pd.Timestamp.now()
-    upcoming = all_events[all_events["start_ts"] >= now].sort_values("start_ts", ascending=True).head(3)
-    past = all_events[all_events["end_ts"] < now].sort_values("end_ts", ascending=False).head(3)
-    return past.to_dict("records"), upcoming.to_dict("records")
+
+    now = pd.Timestamp.now(tz="UTC")
+
+    for event in events:
+        event_datetime = pd.to_datetime(
+            event.get("start_datetime"),
+            utc=True,
+            errors="coerce",
+        )
+
+        event["_start_datetime_parsed"] = event_datetime
+
+    valid_events = [
+        event
+        for event in events
+        if not pd.isna(event["_start_datetime_parsed"])
+    ]
+
+    past = [
+        event
+        for event in valid_events
+        if event["_start_datetime_parsed"] < now
+    ]
+
+    upcoming = [
+        event
+        for event in valid_events
+        if event["_start_datetime_parsed"] >= now
+    ]
+
+    return past, upcoming
 
 
 def dashboard_counts():
