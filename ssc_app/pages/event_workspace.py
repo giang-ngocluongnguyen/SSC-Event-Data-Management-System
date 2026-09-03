@@ -830,7 +830,7 @@ with tab_checkin:
             "registration_id", "participant_name", "role", "registered_by_name",
             "email", "phone_number", "channel", "notes", "attendance_status"
         ]].copy()
-        display.columns = ["Registration code", "Name", "Role", "Registered by", "Email", "Phone", "Channel", "Status"]
+        display.columns = ["Registration Code", "Name", "Role", "Registered by", "Email", "Phone", "Channel", "Notes", "Status"]
         st.dataframe(display, hide_index=True, use_container_width=True)
 
         options = {f"{row['registration_id']} — {row['participant_name']} — {row['role']}": row for row in matches}
