@@ -828,7 +828,7 @@ with tab_checkin:
         table = pd.DataFrame(matches)
         display = table[[
             "registration_id", "participant_name", "role", "registered_by_name",
-            "email", "phone_number", "channel", "attendance_status"
+            "email", "phone_number", "channel", "notes", "attendance_status"
         ]].copy()
         display.columns = ["Registration code", "Name", "Role", "Registered by", "Email", "Phone", "Channel", "Status"]
         st.dataframe(display, hide_index=True, use_container_width=True)
